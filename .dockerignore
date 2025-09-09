@@ -6,5 +6,5 @@ yarn-error.log
 # build
 .next
 out
-
+.env.local
 
