@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic"; // prevents prerender
+export const runtime = "nodejs";        // ensure Node runtime
+
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { updateSubscriptionAfterPayment } from "@/lib/db/users";
