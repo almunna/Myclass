@@ -132,6 +132,9 @@ export function BehaviorModal({
       setSelectedBehaviors([]);
       setNotes("");
       setSelectedActions([]);
+
+      // NEW: close modal after successful save
+      onClose();
     } catch (err) {
       console.error("Error saving behavior:", err);
     }

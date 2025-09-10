@@ -84,6 +84,8 @@ interface RoomExit {
   returnTime: any | null;
   duration: number | null;
   status: "out" | "returned";
+  /** NEW: destination (optional) */
+  destination?: string | null;
 }
 
 interface SummaryData {
@@ -93,6 +95,8 @@ interface SummaryData {
   totalExits: number;
   totalDuration: number;
   averageDuration: number;
+  /** NEW: most frequent destination across this student's exits */
+  topDestination?: string | null;
 }
 
 // For charts
@@ -103,7 +107,7 @@ interface ChartData {
 
 export default function ReportsPage() {
   const { currentUser } = useAuth();
-  const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
+  // const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
   const [isClient, setIsClient] = useState(false);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -122,6 +126,8 @@ export default function ReportsPage() {
   const [timeDistributionData, setTimeDistributionData] = useState<any[]>([]);
   const [dayDistributionData, setDayDistributionData] = useState<any[]>([]);
   const [studentDurationChartData, setStudentDurationChartData] = useState<ChartData[]>([]);
+  /** NEW: destinations chart data */
+  const [destinationChartData, setDestinationChartData] = useState<ChartData[]>([]);
   
   // UI states
   const [showCharts, setShowCharts] = useState(true);
@@ -184,7 +190,7 @@ export default function ReportsPage() {
         const data = doc.data();
         const schoolYear = schoolYearsList.find((sy) => sy.id === data.schoolYearId);
         return {
-        id: doc.id,
+          id: doc.id,
           name: data.name,
           schoolYearName: schoolYear?.name || "Unknown School Year",
         };
@@ -337,13 +343,13 @@ export default function ReportsPage() {
   const generateSummaryData = (filteredExits: RoomExit[]) => {
     // Create a map to track data per student
     const studentMap = new Map<string, SummaryData>();
+    // Track destination frequency per student
+    const destMap = new Map<string, Map<string, number>>();
     
     // Process each exit
     filteredExits.forEach(exit => {
-      // Create key for this student
       const key = exit.studentId;
-      
-      // If student not in map yet, add them
+
       if (!studentMap.has(key)) {
         studentMap.set(key, {
           studentId: exit.studentId,
@@ -351,27 +357,45 @@ export default function ReportsPage() {
           periodName: exit.periodName,
           totalExits: 0,
           totalDuration: 0,
-          averageDuration: 0
+          averageDuration: 0,
+          topDestination: null,
         });
       }
-      
-      // Get student record
       const record = studentMap.get(key)!;
-      
-      // Increment exit count
       record.totalExits++;
-      
-      // Add duration if exit is complete
+
       if (exit.status === "returned" && exit.duration !== null) {
         record.totalDuration += exit.duration;
       }
+
+      // Count destination
+      const dest = (exit.destination || "Unknown") as string;
+      if (!destMap.has(key)) destMap.set(key, new Map());
+      const m = destMap.get(key)!;
+      m.set(dest, (m.get(dest) || 0) + 1);
     });
     
-    // Calculate averages and convert to array
+    // Calculate averages and top destination
     const summaryArray = Array.from(studentMap.values()).map(record => {
       if (record.totalExits > 0 && record.totalDuration > 0) {
         record.averageDuration = Math.round(record.totalDuration / record.totalExits);
       }
+
+      const m = destMap.get(record.studentId);
+      if (m && m.size > 0) {
+        let top: string | null = null;
+        let topCount = -1;
+        m.forEach((count, name) => {
+          if (count > topCount) {
+            topCount = count;
+            top = name;
+          }
+        });
+        record.topDestination = top;
+      } else {
+        record.topDestination = null;
+      }
+
       return record;
     });
     
@@ -390,68 +414,48 @@ export default function ReportsPage() {
       studentExitsMap.set(exit.studentName, count + 1);
     });
     
-    // Convert to array and sort by count
     let studentChartData = Array.from(studentExitsMap.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)
-      .slice(0, 8); // Top 8 students
-      
+      .slice(0, 8);
     setStudentExitsChartData(studentChartData);
     
-    // 2. Period exits chart - exits by period
+    // 2. Period exits chart
     const periodExitsMap = new Map<string, number>();
     filteredExits.forEach(exit => {
       const periodName = exit.periodName || "No Period";
       const count = periodExitsMap.get(periodName) || 0;
       periodExitsMap.set(periodName, count + 1);
     });
-    
-    // Convert to array
     let periodChartData = Array.from(periodExitsMap.entries())
       .map(([name, value]) => ({ name, value }));
-      
     setPeriodExitsChartData(periodChartData);
     
-    // 3. Time distribution - when students leave by hour of day
+    // 3. Time distribution (by hour)
     const timeMap = new Map<number, number>();
-    // Initialize hours
-    for (let i = 0; i < 24; i++) {
-      timeMap.set(i, 0);
-    }
-    
+    for (let i = 0; i < 24; i++) timeMap.set(i, 0);
     filteredExits.forEach(exit => {
       const date = exit.exitTime?.toDate ? exit.exitTime.toDate() : new Date(exit.exitTime);
       const hour = date.getHours();
-      const count = timeMap.get(hour) || 0;
-      timeMap.set(hour, count + 1);
+      timeMap.set(hour, (timeMap.get(hour) || 0) + 1);
     });
-    
-    // Convert to array with formatted time labels
     const timeData = Array.from(timeMap.entries())
       .map(([hour, count]) => ({
         hour,
         name: `${hour % 12 === 0 ? 12 : hour % 12}${hour < 12 ? 'am' : 'pm'}`,
         exits: count
       }))
-      .filter(item => item.exits > 0); // Only include hours with data
-      
+      .filter(item => item.exits > 0);
     setTimeDistributionData(timeData);
     
     // 4. Day of week distribution
     const dayMap = new Map<number, number>();
-    // Initialize days (0 = Sunday, 6 = Saturday)
-    for (let i = 0; i < 7; i++) {
-      dayMap.set(i, 0);
-    }
-    
+    for (let i = 0; i < 7; i++) dayMap.set(i, 0);
     filteredExits.forEach(exit => {
       const date = exit.exitTime?.toDate ? exit.exitTime.toDate() : new Date(exit.exitTime);
-      const day = date.getDay(); // 0 = Sunday, 6 = Saturday
-      const count = dayMap.get(day) || 0;
-      dayMap.set(day, count + 1);
+      const day = date.getDay();
+      dayMap.set(day, (dayMap.get(day) || 0) + 1);
     });
-    
-    // Convert to array with day names
     const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const dayData = Array.from(dayMap.entries())
       .map(([day, count]) => ({
@@ -459,32 +463,35 @@ export default function ReportsPage() {
         name: dayNames[day],
         exits: count
       }))
-      .filter(item => item.exits > 0); // Only include days with data
-      
+      .filter(item => item.exits > 0);
     setDayDistributionData(dayData);
     
-    // 5. Student duration chart - total minutes students spent out of class
+    // 5. Student duration chart
     const studentDurationMap = new Map<string, number>();
     filteredExits.forEach(exit => {
       if (exit.status === "returned" && exit.duration !== null) {
-        const duration = studentDurationMap.get(exit.studentName) || 0;
-        studentDurationMap.set(exit.studentName, duration + exit.duration);
+        studentDurationMap.set(exit.studentName, (studentDurationMap.get(exit.studentName) || 0) + exit.duration);
       }
     });
-    
-    // Convert to array and sort by duration
     let studentDurationData = Array.from(studentDurationMap.entries())
       .map(([name, value]) => ({ name, value }))
       .sort((a, b) => b.value - a.value)
-      .slice(0, 8); // Top 8 students
-      
+      .slice(0, 8);
     setStudentDurationChartData(studentDurationData);
+
+    // 6. NEW: Destination distribution
+    const destMap = new Map<string, number>();
+    filteredExits.forEach(exit => {
+      const dest = (exit.destination || "Unknown") as string;
+      destMap.set(dest, (destMap.get(dest) || 0) + 1);
+    });
+    const destData = Array.from(destMap.entries()).map(([name, value]) => ({ name, value }));
+    setDestinationChartData(destData);
   };
 
   // Format date and time from timestamp
   const formatDateTime = (timestamp: any) => {
     if (!timestamp) return '-';
-    
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleString([], { 
       month: 'numeric',
@@ -503,8 +510,7 @@ export default function ReportsPage() {
 
   // Export as CSV
   const exportToCsv = () => {
-    // Function to escape CSV values
-    const escapeCSV = (value: string | number | null) => {
+    const escapeCSV = (value: string | number | null | undefined) => {
       if (value === null || value === undefined) return '';
       return typeof value === 'string' ? `"${value.replace(/"/g, '""')}"` : value;
     };
@@ -513,43 +519,37 @@ export default function ReportsPage() {
       let csvContent = "";
       let filename = "";
       
-      // Different CSV structure based on report type
       if (activeTab === "summary") {
-        // Summary report headers
-        csvContent = "Student Name,Period,Total Exits,Total Duration (min),Average Duration (min)\n";
-        
-        // Add data rows
+        // Summary with Top Destination
+        csvContent = "Student Name,Period,Total Exits,Total Duration (min),Average Duration (min),Top Destination\n";
         summaryData.forEach(row => {
           csvContent += [
             escapeCSV(row.studentName),
             escapeCSV(row.periodName || 'No Period'),
             escapeCSV(row.totalExits),
             escapeCSV(row.totalDuration),
-            escapeCSV(row.averageDuration)
+            escapeCSV(row.averageDuration),
+            escapeCSV(row.topDestination || "-"),
           ].join(',') + '\n';
         });
-        
         filename = "summary-report.csv";
       } else {
-        // Detailed report headers
-        csvContent = "Student Name,Period,Exit Date/Time,Return Date/Time,Duration (min),Status\n";
-        
-        // Add data rows - using filteredExits to export ALL data, not just the paginated view
+        // Detailed with Destination column
+        csvContent = "Student Name,Period,Destination,Exit Date/Time,Return Date/Time,Duration (min),Status\n";
         filteredExits.forEach(exit => {
           csvContent += [
             escapeCSV(exit.studentName),
             escapeCSV(exit.periodName || 'No Period'),
+            escapeCSV(exit.destination || '-'),
             escapeCSV(formatDateTime(exit.exitTime)),
             escapeCSV(formatDateTime(exit.returnTime)),
             escapeCSV(exit.duration),
             escapeCSV(exit.status)
           ].join(',') + '\n';
         });
-        
         filename = "detailed-report.csv";
       }
       
-      // Create a download link
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -563,61 +563,21 @@ export default function ReportsPage() {
     }
   };
 
-  // Handle school year selection
   const handleSchoolYearChange = (value: string) => {
     setSelectedSchoolYearId(value);
-    // Reset period selection when school year changes
     setSelectedPeriodId("all");
   };
+  const handlePeriodChange = (value: string) => setSelectedPeriodId(value);
+  const handleStudentChange = (value: string) => setSelectedStudentId(value);
+  const toggleCharts = () => setShowCharts(!showCharts);
 
-  // Handle period selection
-  const handlePeriodChange = (value: string) => {
-    setSelectedPeriodId(value);
-  };
-
-  // Handle student selection
-  const handleStudentChange = (value: string) => {
-    setSelectedStudentId(value);
-  };
-
-  // Toggle charts visibility
-  const toggleCharts = () => {
-    setShowCharts(!showCharts);
-  };
-
-  // Get current exits for pagination
   const indexOfLastExit = currentPage * itemsPerPage;
   const indexOfFirstExit = indexOfLastExit - itemsPerPage;
   const currentExits = filteredExits.slice(indexOfFirstExit, indexOfLastExit);
   const totalPages = Math.ceil(filteredExits.length / itemsPerPage);
-  
-  // Change page
   const paginate = (pageNumber: number) => setCurrentPage(pageNumber);
   const nextPage = () => setCurrentPage(prev => Math.min(prev + 1, totalPages));
   const prevPage = () => setCurrentPage(prev => Math.max(prev - 1, 1));
-
-  // Show loading while checking subscription
-  if (subscriptionLoading) {
-    return (
-      <ProtectedRoute>
-        <div className="flex justify-center items-center h-screen">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-        </div>
-      </ProtectedRoute>
-    );
-  }
-
-  // Show no access if user doesn't have subscription
-  if (!hasAccess) {
-    return (
-      <ProtectedRoute>
-        <NoAccess 
-          title="Reports & Analytics" 
-          description="Access to detailed reports and analytics requires an active subscription." 
-        />
-      </ProtectedRoute>
-    );
-  }
 
   return (
     <ProtectedRoute>
@@ -711,7 +671,6 @@ export default function ReportsPage() {
                       <SelectContent>
                         <SelectItem value="all">All Periods</SelectItem>
                         {(() => {
-                          // Filter periods by selected school year if any
                           let filteredPeriods = periods;
                           if (selectedSchoolYearId !== "all") {
                             const selectedSchoolYear = schoolYears.find(sy => sy.id === selectedSchoolYearId);
@@ -722,13 +681,10 @@ export default function ReportsPage() {
                             }
                           }
 
-                          // Group periods by school year (if showing all school years)
                           if (selectedSchoolYearId === "all") {
                             const groupedPeriods = filteredPeriods.reduce((acc, period) => {
                               const yearName = period.schoolYearName || "Unknown School Year";
-                              if (!acc[yearName]) {
-                                acc[yearName] = [];
-                              }
+                              if (!acc[yearName]) acc[yearName] = [];
                               acc[yearName].push(period);
                               return acc;
                             }, {} as Record<string, Period[]>);
@@ -740,13 +696,12 @@ export default function ReportsPage() {
                                 </div>
                                 {yearPeriods.map((period) => (
                                   <SelectItem key={period.id} value={period.id} className="pl-6">
-                            {period.name}
-                          </SelectItem>
-                        ))}
+                                    {period.name}
+                                  </SelectItem>
+                                ))}
                               </div>
                             ));
                           } else {
-                            // Just show periods without grouping when a school year is selected
                             return filteredPeriods.map((period) => (
                               <SelectItem key={period.id} value={period.id}>
                                 {period.name}
@@ -791,10 +746,10 @@ export default function ReportsPage() {
             </Card>
             
             <Tabs defaultValue="summary" value={activeTab} onValueChange={setActiveTab}>
-                        <TabsList className="mb-4">
-            <TabsTrigger value="summary">Summary Report</TabsTrigger>
-            <TabsTrigger value="detailed">Detailed Report</TabsTrigger>
-            <TabsTrigger value="charts">Visualizations</TabsTrigger>
+              <TabsList className="mb-4">
+                <TabsTrigger value="summary">Summary Report</TabsTrigger>
+                <TabsTrigger value="detailed">Detailed Report</TabsTrigger>
+                <TabsTrigger value="charts">Visualizations</TabsTrigger>
               </TabsList>
               
               <TabsContent value="summary">
@@ -818,6 +773,8 @@ export default function ReportsPage() {
                               <TableHead className="text-right">Total Exits</TableHead>
                               <TableHead className="text-right">Total Duration</TableHead>
                               <TableHead className="text-right">Avg. Duration</TableHead>
+                              {/* NEW: Top Destination */}
+                              <TableHead>Top Destination</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -828,6 +785,7 @@ export default function ReportsPage() {
                                 <TableCell className="text-right">{row.totalExits}</TableCell>
                                 <TableCell className="text-right">{formatDuration(row.totalDuration)}</TableCell>
                                 <TableCell className="text-right">{formatDuration(row.averageDuration)}</TableCell>
+                                <TableCell>{row.topDestination || "-"}</TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -857,6 +815,8 @@ export default function ReportsPage() {
                               <TableRow>
                                 <TableHead>Student</TableHead>
                                 <TableHead>Period</TableHead>
+                                {/* NEW: Destination column */}
+                                <TableHead>Destination</TableHead>
                                 <TableHead>Exit Date/Time</TableHead>
                                 <TableHead>Return Date/Time</TableHead>
                                 <TableHead className="text-right">Duration</TableHead>
@@ -868,6 +828,8 @@ export default function ReportsPage() {
                                 <TableRow key={exit.id}>
                                   <TableCell className="font-medium">{exit.studentName}</TableCell>
                                   <TableCell>{exit.periodName || "No Period"}</TableCell>
+                                  {/* NEW: show destination value */}
+                                  <TableCell>{exit.destination || "-"}</TableCell>
                                   <TableCell>{formatDateTime(exit.exitTime)}</TableCell>
                                   <TableCell>{formatDateTime(exit.returnTime)}</TableCell>
                                   <TableCell className="text-right">{formatDuration(exit.duration)}</TableCell>
@@ -904,15 +866,12 @@ export default function ReportsPage() {
                               Previous
                             </Button>
                             {Array.from({ length: Math.min(5, totalPages) }).map((_, index) => {
-                              // Show pages around current page
                               let pageToShow = currentPage - 2 + index;
                               if (currentPage < 3) {
                                 pageToShow = index + 1;
                               } else if (currentPage > totalPages - 2) {
                                 pageToShow = totalPages - 4 + index;
                               }
-                              
-                              // Ensure page is in valid range
                               if (pageToShow > 0 && pageToShow <= totalPages) {
                                 return (
                                   <Button
@@ -1061,6 +1020,59 @@ export default function ReportsPage() {
                         </div>
                       </CardContent>
                     </Card>
+
+                    {/* NEW: Exits by Destination */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Exits by Destination</CardTitle>
+                        <CardDescription>
+                          Where students are going during the selected period
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex flex-col lg:flex-row items-center justify-center gap-4">
+                          {/* Pie Chart */}
+                          <div className="h-[300px] w-full lg:w-1/2">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={destinationChartData}
+                                  dataKey="value"
+                                  nameKey="name"
+                                  cx="50%"
+                                  cy="50%"
+                                  outerRadius={100}
+                                  fill="#8884d8"
+                                  label={({name, percent}) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                                >
+                                  {destinationChartData.map((entry, index) => (
+                                    <Cell key={`dest-cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                  ))}
+                                </Pie>
+                                <Tooltip formatter={(value) => [`${value} exits`, 'Count']} />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          </div>
+
+                          {/* Horizontal Bar Chart */}
+                          <div className="h-[300px] w-full lg:w-1/2">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart
+                                data={destinationChartData}
+                                margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                                layout="vertical"
+                              >
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis type="number" />
+                                <YAxis dataKey="name" type="category" width={120} />
+                                <Tooltip />
+                                <Bar dataKey="value" name="Number of Exits" fill="#00C49F" />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
                     
                     {/* Time Patterns */}
                     <Card>
@@ -1121,4 +1133,4 @@ export default function ReportsPage() {
       </div>
     </ProtectedRoute>
   );
-} 
+}

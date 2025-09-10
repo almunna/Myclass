@@ -65,7 +65,8 @@ type Destination =
   | "deans"
   | "frontOffice"
   | "guidance"
-  | "library";
+  | "library"
+  | "other";
 
 const DESTINATIONS: { value: Destination; label: string }[] = [
   { value: "restroom", label: "Restroom" },
@@ -73,6 +74,7 @@ const DESTINATIONS: { value: Destination; label: string }[] = [
   { value: "frontOffice", label: "Front office" },
   { value: "guidance", label: "Guidance" },
   { value: "library", label: "Library" },
+  { value: "other", label: "Other" },
   
 ];
 
