@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { updateSubscriptionAfterPayment } from "@/lib/db/users";
+import Stripe from "stripe";
 
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function POST(request: NextRequest) {
   console.log("🔔 Webhook received");
-  
+
   const body = await request.text();
   const headersList = await headers();
   const signature = headersList.get("stripe-signature");
@@ -17,8 +18,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No signature" }, { status: 400 });
   }
 
-  let event;
+  const secret = process.env.STRIPE_SECRET_KEY;
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret || !endpointSecret) {
+    console.error("❌ Stripe secrets not configured");
+    return NextResponse.json({ error: "Server misconfiguration" }, { status: 500 });
+  }
 
+  // No apiVersion option → avoids literal-type mismatch
+  const stripe = new Stripe(secret);
+
+  let event: Stripe.Event;
   try {
     event = stripe.webhooks.constructEvent(body, signature, endpointSecret);
     console.log("✅ Webhook verified, event type:", event.type);
@@ -27,46 +37,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Webhook Error: ${err.message}` }, { status: 400 });
   }
 
-  // Handle the event
+  // Lazy-load db helper to avoid build-time Firebase init
+  const { updateSubscriptionAfterPayment } = await import("@/lib/db/users");
+
   switch (event.type) {
-    case 'payment_intent.succeeded':
-      const paymentIntent = event.data.object;
-      console.log('💰 PaymentIntent was successful!', {
-        id: paymentIntent.id,
-        amount: paymentIntent.amount,
-        metadata: paymentIntent.metadata
-      });
-      
-      // Update user subscription in database
-      if (paymentIntent.metadata?.userId) {
-        console.log('🔄 Updating user subscription for userId:', paymentIntent.metadata.userId);
-        const result = await updateSubscriptionAfterPayment(
-          paymentIntent.metadata.userId,
-          paymentIntent.amount,
-          paymentIntent.customer
+    case "payment_intent.succeeded": {
+      const pi = event.data.object as Stripe.PaymentIntent;
+
+      const customerId =
+        typeof pi.customer === "string" ? pi.customer : undefined;
+
+      if (pi.metadata?.userId) {
+        await updateSubscriptionAfterPayment(
+          pi.metadata.userId,
+          pi.amount,
+          customerId
         );
-        console.log('✅ Subscription update result:', result);
       } else {
-        console.error('❌ No userId in payment metadata');
+        console.error("❌ No userId in payment metadata");
       }
       break;
-
-    case 'payment_intent.payment_failed':
-      const failedPayment = event.data.object;
-      console.log('❌ Payment failed:', failedPayment.id);
-      // Handle failed payment (e.g., send email, update status)
+    }
+    case "payment_intent.payment_failed": {
+      const failed = event.data.object as Stripe.PaymentIntent;
+      console.log("❌ Payment failed:", failed.id);
       break;
-
-    case 'customer.subscription.created':
-    case 'customer.subscription.updated':
-      const subscription = event.data.object;
-      console.log('📅 Subscription event:', subscription.id);
-      // Handle subscription events if using Stripe subscriptions
+    }
+    case "customer.subscription.created":
+    case "customer.subscription.updated": {
+      const sub = event.data.object as Stripe.Subscription;
+      console.log("📅 Subscription event:", sub.id);
       break;
-
+    }
     default:
       console.log(`⚠️ Unhandled event type ${event.type}`);
   }
 
   return NextResponse.json({ received: true });
-} 
+}
