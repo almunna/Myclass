@@ -1,9 +1,23 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, getDocs, query, where, doc, updateDoc, deleteDoc } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  doc,
+  updateDoc,
+  deleteDoc,
+} from "firebase/firestore";
 import { db } from "@/firebase/firebase";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -25,23 +39,26 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { 
-  Users, 
+import {
+  Users,
   Shield,
-  Database, 
-  Activity, 
+  Database,
+  Activity,
   Trash2,
   Eye,
   Crown,
   UserCheck,
   Calendar,
-  BookOpen
+  BookOpen,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { hasAdminAccess } from "@/lib/admin";
 import { toast } from "sonner";
 import { getUserSubscription } from "@/lib/db/users";
+
+// ✅ NEW: modal component import
+import TutorialVideosModal from "@/components/admin/TutorialVideosModal";
 
 interface AdminStats {
   totalUsers: number;
@@ -74,6 +91,9 @@ export default function AdminPage() {
   const [selectedUser, setSelectedUser] = useState<UserData | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
+  // ✅ NEW: modal open state
+  const [showTutorialsModal, setShowTutorialsModal] = useState(false);
+
   // Check if current user is admin
   const isAdmin = currentUser ? hasAdminAccess(currentUser) : false;
 
@@ -86,10 +106,7 @@ export default function AdminPage() {
   const fetchAdminData = async () => {
     setLoading(true);
     try {
-      await Promise.all([
-        fetchStats(),
-        fetchUsers()
-      ]);
+      await Promise.all([fetchStats(), fetchUsers()]);
     } catch (error) {
       console.error("Error fetching admin data:", error);
       toast.error("Failed to load admin data");
@@ -101,18 +118,21 @@ export default function AdminPage() {
   const fetchStats = async () => {
     try {
       console.log("🔍 Admin: Fetching stats...");
-      
+
       // Get all users
       const usersSnapshot = await getDocs(collection(db, "users"));
       const totalUsers = usersSnapshot.size;
       console.log("👥 Users found:", totalUsers);
-      
+
       // Count active subscriptions
       let activeSubscriptions = 0;
-      usersSnapshot.docs.forEach(doc => {
+      usersSnapshot.docs.forEach((doc) => {
         const data = doc.data();
-        console.log("User data:", { email: data.email, status: data.subscriptionStatus });
-        if (data.subscriptionStatus === 'active') {
+        console.log("User data:", {
+          email: data.email,
+          status: data.subscriptionStatus,
+        });
+        if (data.subscriptionStatus === "active") {
           activeSubscriptions++;
         }
       });
@@ -140,11 +160,14 @@ export default function AdminPage() {
         totalPeriods,
         totalRoomExits,
       });
-      
+
       console.log("✅ Stats updated successfully");
     } catch (error) {
       console.error("❌ Error fetching stats:", error);
-      toast.error("Failed to fetch statistics: " + (error instanceof Error ? error.message : String(error)));
+      toast.error(
+        "Failed to fetch statistics: " +
+          (error instanceof Error ? error.message : String(error))
+      );
     }
   };
 
@@ -153,7 +176,7 @@ export default function AdminPage() {
       console.log("🔍 Admin: Fetching users...");
       const usersSnapshot = await getDocs(collection(db, "users"));
       console.log("📄 User documents found:", usersSnapshot.size);
-      
+
       const usersData: UserData[] = [];
 
       for (const userDoc of usersSnapshot.docs) {
@@ -161,10 +184,10 @@ export default function AdminPage() {
         console.log("👤 Processing user:", userData.email);
         usersData.push({
           uid: userDoc.id,
-          email: userData.email || '',
+          email: userData.email || "",
           displayName: userData.displayName,
           createdAt: userData.createdAt,
-          subscription: userData
+          subscription: userData,
         });
       }
 
@@ -172,7 +195,10 @@ export default function AdminPage() {
       setUsers(usersData.sort((a, b) => a.email.localeCompare(b.email)));
     } catch (error) {
       console.error("❌ Error fetching users:", error);
-      toast.error("Failed to fetch users: " + (error instanceof Error ? error.message : String(error)));
+      toast.error(
+        "Failed to fetch users: " +
+          (error instanceof Error ? error.message : String(error))
+      );
     }
   };
 
@@ -182,14 +208,15 @@ export default function AdminPage() {
     try {
       // Delete user document from Firestore
       await deleteDoc(doc(db, "users", selectedUser.uid));
-      
+
       // Remove from local state
-      setUsers(users.filter(u => u.uid !== selectedUser.uid));
-      
+      setUsers(users.filter((u) => u.uid !== selectedUser.uid));
+
+      // 🔧 tiny fix: proper template string
       toast.success(`User ${selectedUser.email} deleted successfully`);
       setShowDeleteDialog(false);
       setSelectedUser(null);
-      
+
       // Refresh stats
       fetchStats();
     } catch (error) {
@@ -200,31 +227,33 @@ export default function AdminPage() {
 
   const getSubscriptionStatus = (subscription: any) => {
     if (!subscription) return "No Data";
-    
+
     switch (subscription.subscriptionStatus) {
-      case 'active':
-        return subscription.subscriptionPlan === 'admin' ? 'Admin' : 'Active';
-      case 'cancelled':
-        return 'Cancelled';
-      case 'past_due':
-        return 'Past Due';
+      case "active":
+        return subscription.subscriptionPlan === "admin" ? "Admin" : "Active";
+      case "cancelled":
+        return "Cancelled";
+      case "past_due":
+        return "Past Due";
       default:
-        return 'Inactive';
+        return "Inactive";
     }
   };
 
   const getStatusColor = (subscription: any) => {
     if (!subscription) return "secondary";
-    
+
     switch (subscription.subscriptionStatus) {
-      case 'active':
-        return subscription.subscriptionPlan === 'admin' ? 'destructive' : 'default';
-      case 'cancelled':
-        return 'secondary';
-      case 'past_due':
-        return 'destructive';
+      case "active":
+        return subscription.subscriptionPlan === "admin"
+          ? "destructive"
+          : "default";
+      case "cancelled":
+        return "secondary";
+      case "past_due":
+        return "destructive";
       default:
-        return 'outline';
+        return "outline";
     }
   };
 
@@ -238,13 +267,18 @@ export default function AdminPage() {
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
                 <Shield className="h-6 w-6 text-red-600" />
               </div>
-              <CardTitle className="text-xl text-red-600">Access Denied</CardTitle>
+              <CardTitle className="text-xl text-red-600">
+                Access Denied
+              </CardTitle>
               <CardDescription className="text-base">
                 This page is restricted to administrators only.
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button onClick={() => window.location.href = '/dashboard'} className="w-full">
+              <Button
+                onClick={() => (window.location.href = "/dashboard")}
+                className="w-full"
+              >
                 Return to Dashboard
               </Button>
             </CardContent>
@@ -294,11 +328,15 @@ export default function AdminPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-              <CardTitle className="text-sm font-medium">Active Subscriptions</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                Active Subscriptions
+              </CardTitle>
               <UserCheck className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.activeSubscriptions}</div>
+              <div className="text-2xl font-bold">
+                {stats.activeSubscriptions}
+              </div>
               <p className="text-xs text-muted-foreground pt-1">
                 Paying customers
               </p>
@@ -307,20 +345,22 @@ export default function AdminPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-              <CardTitle className="text-sm font-medium">Total Students</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                Total Students
+              </CardTitle>
               <BookOpen className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{stats.totalStudents}</div>
-              <p className="text-xs text-muted-foreground pt-1">
-                All students
-              </p>
+              <p className="text-xs text-muted-foreground pt-1">All students</p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2 space-y-0">
-              <CardTitle className="text-sm font-medium">Class Periods</CardTitle>
+              <CardTitle className="text-sm font-medium">
+                Class Periods
+              </CardTitle>
               <Calendar className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
@@ -385,7 +425,9 @@ export default function AdminPage() {
                           <TableCell className="font-medium">
                             {user.email}
                             {user.email === currentUser?.email && (
-                              <Badge variant="outline" className="ml-2">You</Badge>
+                              <Badge variant="outline" className="ml-2">
+                                You
+                              </Badge>
                             )}
                           </TableCell>
                           <TableCell>
@@ -394,13 +436,12 @@ export default function AdminPage() {
                             </Badge>
                           </TableCell>
                           <TableCell>
-                            {user.subscription?.subscriptionPlan || 'Free'}
+                            {user.subscription?.subscriptionPlan || "Free"}
                           </TableCell>
                           <TableCell>
-                            {user.createdAt?.toDate ? 
-                              user.createdAt.toDate().toLocaleDateString() : 
-                              'Unknown'
-                            }
+                            {user.createdAt?.toDate
+                              ? user.createdAt.toDate().toLocaleDateString()
+                              : "Unknown"}
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
@@ -408,7 +449,9 @@ export default function AdminPage() {
                                 variant="outline"
                                 size="sm"
                                 className="h-8 w-8 p-0"
-                                onClick={() => {/* View user details */}}
+                                onClick={() => {
+                                  /* View user details */
+                                }}
                               >
                                 <Eye className="h-4 w-4" />
                               </Button>
@@ -466,7 +509,9 @@ export default function AdminPage() {
                       </div>
                       <div className="flex justify-between">
                         <span>Room Exits:</span>
-                        <span className="font-mono">{stats.totalRoomExits}</span>
+                        <span className="font-mono">
+                          {stats.totalRoomExits}
+                        </span>
                       </div>
                     </CardContent>
                   </Card>
@@ -476,7 +521,11 @@ export default function AdminPage() {
                       <CardTitle className="text-lg">Actions</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2">
-                      <Button variant="outline" className="w-full" onClick={fetchAdminData}>
+                      <Button
+                        variant="outline"
+                        className="w-full"
+                        onClick={fetchAdminData}
+                      >
                         Refresh Data
                       </Button>
                       <Button variant="outline" className="w-full">
@@ -485,14 +534,19 @@ export default function AdminPage() {
                       <Button variant="outline" className="w-full">
                         Backup Database
                       </Button>
+                      {/* ✅ NEW: open tutorials modal */}
+                      <Button
+                        className="w-full"
+                        onClick={() => setShowTutorialsModal(true)}
+                      >
+                        Manage Tutorial Videos
+                      </Button>
                     </CardContent>
                   </Card>
                 </div>
               </CardContent>
             </Card>
           </TabsContent>
-
-
         </Tabs>
 
         {/* Delete User Dialog */}
@@ -501,13 +555,13 @@ export default function AdminPage() {
             <AlertDialogHeader>
               <AlertDialogTitle>Are you sure?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will permanently delete the user "{selectedUser?.email}" and all their data.
-                This action cannot be undone.
+                This will permanently delete the user "{selectedUser?.email}"
+                and all their data. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction 
+              <AlertDialogAction
                 onClick={handleDeleteUser}
                 className="bg-red-600 hover:bg-red-700"
               >
@@ -516,7 +570,15 @@ export default function AdminPage() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* ✅ NEW: Tutorials Modal */}
+        <TutorialVideosModal
+          open={showTutorialsModal}
+          onOpenChange={setShowTutorialsModal}
+          currentUserEmail={currentUser?.email ?? ""}
+          currentUserId={currentUser?.uid ?? ""}
+        />
       </div>
     </ProtectedRoute>
   );
-} 
+}

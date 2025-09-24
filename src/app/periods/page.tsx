@@ -1,14 +1,34 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { collection, getDocs, doc, deleteDoc, query, where, setDoc, updateDoc } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  doc,
+  deleteDoc,
+  query,
+  where,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
 import { db } from "@/firebase/firebase";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -27,14 +47,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { 
-  PlusIcon, 
-  Edit, 
-  Trash2, 
-  GraduationCap, 
+import {
+  PlusIcon,
+  Edit,
+  Trash2,
+  GraduationCap,
   Calendar,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
 } from "lucide-react";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { useSubscriptionAccess } from "@/hooks/useSubscriptionAccess";
@@ -72,33 +92,34 @@ interface Period {
 
 export default function PeriodsPage() {
   const { currentUser } = useAuth();
-  // const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
-  
+  const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
+
   // Data states
   const [schoolYears, setSchoolYears] = useState<SchoolYear[]>([]);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [loading, setLoading] = useState(true);
-  
+
   // UI states
   const [expandedYears, setExpandedYears] = useState<Set<string>>(new Set());
   const [isAddYearModalOpen, setIsAddYearModalOpen] = useState(false);
   const [isEditYearModalOpen, setIsEditYearModalOpen] = useState(false);
   const [isAddPeriodModalOpen, setIsAddPeriodModalOpen] = useState(false);
   const [isEditPeriodModalOpen, setIsEditPeriodModalOpen] = useState(false);
-  
+
   // Form states
-  const [selectedSchoolYear, setSelectedSchoolYear] = useState<SchoolYear | null>(null);
+  const [selectedSchoolYear, setSelectedSchoolYear] =
+    useState<SchoolYear | null>(null);
   const [selectedPeriod, setSelectedPeriod] = useState<Period | null>(null);
-  const [yearFormData, setYearFormData] = useState({ 
-    name: "", 
-    startDate: new Date(), 
-    endDate: new Date(), 
-    isActive: false 
+  const [yearFormData, setYearFormData] = useState({
+    name: "",
+    startDate: new Date(),
+    endDate: new Date(),
+    isActive: false,
   });
-  const [periodFormData, setPeriodFormData] = useState({ 
-    name: "", 
-    startTime: "08:00", 
-    endTime: "09:00", 
+  const [periodFormData, setPeriodFormData] = useState({
+    name: "",
+    startTime: "08:00",
+    endTime: "09:00",
     dayOfWeek: "all",
     schoolYearId: "",
     // NEW: early-release form fields
@@ -107,11 +128,13 @@ export default function PeriodsPage() {
     earlyReleaseStartTime: "00:00",
     earlyReleaseEndTime: "00:00",
   });
-  
+
   // Delete confirmation states
   const [deleteYearDialog, setDeleteYearDialog] = useState(false);
   const [deletePeriodDialog, setDeletePeriodDialog] = useState(false);
-  const [itemToDelete, setItemToDelete] = useState<SchoolYear | Period | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<SchoolYear | Period | null>(
+    null
+  );
 
   useEffect(() => {
     if (currentUser) {
@@ -137,7 +160,7 @@ export default function PeriodsPage() {
       where("teacherId", "==", currentUser?.uid)
     );
     const snapshot = await getDocs(yearsQuery);
-    const yearsList = snapshot.docs.map(doc => ({
+    const yearsList = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     })) as SchoolYear[];
@@ -150,7 +173,7 @@ export default function PeriodsPage() {
       where("teacherId", "==", currentUser?.uid)
     );
     const snapshot = await getDocs(periodsQuery);
-    const periodsList = snapshot.docs.map(doc => ({
+    const periodsList = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     })) as Period[];
@@ -168,7 +191,12 @@ export default function PeriodsPage() {
   };
 
   const handleAddSchoolYear = () => {
-    setYearFormData({ name: "", startDate: new Date(), endDate: new Date(), isActive: false });
+    setYearFormData({
+      name: "",
+      startDate: new Date(),
+      endDate: new Date(),
+      isActive: false,
+    });
     setIsAddYearModalOpen(true);
   };
 
@@ -178,16 +206,16 @@ export default function PeriodsPage() {
       name: year.name,
       startDate: year.startDate ? new Date(year.startDate) : new Date(),
       endDate: year.endDate ? new Date(year.endDate) : new Date(),
-      isActive: year.isActive
+      isActive: year.isActive,
     });
     setIsEditYearModalOpen(true);
   };
 
   const handleAddPeriod = (schoolYearId: string) => {
-    setPeriodFormData({ 
-      name: "", 
-      startTime: "08:00", 
-      endTime: "09:00", 
+    setPeriodFormData({
+      name: "",
+      startTime: "08:00",
+      endTime: "09:00",
       dayOfWeek: "all",
       schoolYearId,
       earlyReleaseEnabled: false,
@@ -224,8 +252,8 @@ export default function PeriodsPage() {
     try {
       const yearData = {
         name: yearFormData.name,
-        startDate: yearFormData.startDate.toISOString().split('T')[0],
-        endDate: yearFormData.endDate.toISOString().split('T')[0],
+        startDate: yearFormData.startDate.toISOString().split("T")[0],
+        endDate: yearFormData.endDate.toISOString().split("T")[0],
         isActive: yearFormData.isActive,
         teacherId: currentUser?.uid,
       };
@@ -261,20 +289,20 @@ export default function PeriodsPage() {
     }
 
     try {
-      const earlyRelease =
-        periodFormData.earlyReleaseEnabled
-          ? {
-              dayOfWeek: periodFormData.earlyReleaseDayOfWeek,
-              startTime: periodFormData.earlyReleaseStartTime,
-              endTime: periodFormData.earlyReleaseEndTime,
-            }
-          : null;
+      const earlyRelease = periodFormData.earlyReleaseEnabled
+        ? {
+            dayOfWeek: periodFormData.earlyReleaseDayOfWeek,
+            startTime: periodFormData.earlyReleaseStartTime,
+            endTime: periodFormData.earlyReleaseEndTime,
+          }
+        : null;
 
       const periodData = {
         name: periodFormData.name,
         startTime: periodFormData.startTime,
         endTime: periodFormData.endTime,
-        dayOfWeek: periodFormData.dayOfWeek === "all" ? null : periodFormData.dayOfWeek,
+        dayOfWeek:
+          periodFormData.dayOfWeek === "all" ? null : periodFormData.dayOfWeek,
         schoolYearId: periodFormData.schoolYearId,
         teacherId: currentUser?.uid,
         // NEW
@@ -307,12 +335,16 @@ export default function PeriodsPage() {
 
   const deleteSchoolYear = async () => {
     if (!itemToDelete) return;
-    
+
     try {
       // Check if there are periods under this school year
-      const relatedPeriods = periods.filter(p => p.schoolYearId === itemToDelete.id);
+      const relatedPeriods = periods.filter(
+        (p) => p.schoolYearId === itemToDelete.id
+      );
       if (relatedPeriods.length > 0) {
-        toast.error("Cannot delete school year with existing periods. Delete periods first.");
+        toast.error(
+          "Cannot delete school year with existing periods. Delete periods first."
+        );
         return;
       }
 
@@ -329,7 +361,7 @@ export default function PeriodsPage() {
 
   const deletePeriod = async () => {
     if (!itemToDelete) return;
-    
+
     try {
       await deleteDoc(doc(db, "periods", itemToDelete.id));
       toast.success("Period deleted successfully");
@@ -343,31 +375,31 @@ export default function PeriodsPage() {
   };
 
   const getPeriodsForYear = (schoolYearId: string) => {
-    return periods.filter(period => period.schoolYearId === schoolYearId);
+    return periods.filter((period) => period.schoolYearId === schoolYearId);
   };
 
-  // // Show loading while checking subscription
-  // if (subscriptionLoading) {
-  //   return (
-  //     <ProtectedRoute>
-  //       <div className="flex justify-center items-center h-screen">
-  //         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-  //       </div>
-  //     </ProtectedRoute>
-  //   );
-  // }
+  // Show loading while checking subscription
+  if (subscriptionLoading) {
+    return (
+      <ProtectedRoute>
+        <div className="flex justify-center items-center h-screen">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
 
-  // // Show no access if user doesn't have subscription
-  // if (!hasAccess) {
-  //   return (
-  //     <ProtectedRoute>
-  //       <NoAccess 
-  //         title="School Years & Class Periods" 
-  //         description="Access to school years and class periods management requires an active subscription." 
-  //       />
-  //     </ProtectedRoute>
-  //   );
-  // }
+  // Show no access if user doesn't have subscription
+  if (!hasAccess) {
+    return (
+      <ProtectedRoute>
+        <NoAccess
+          title="School Years & Class Periods"
+          description="Access to school years and class periods management requires an active subscription."
+        />
+      </ProtectedRoute>
+    );
+  }
 
   if (loading) {
     return (
@@ -375,7 +407,9 @@ export default function PeriodsPage() {
         <div className="container mx-auto px-4 py-8">
           <div className="text-center py-8">
             <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto"></div>
-            <p className="mt-2 text-muted-foreground">Loading school years and periods...</p>
+            <p className="mt-2 text-muted-foreground">
+              Loading school years and periods...
+            </p>
           </div>
         </div>
       </ProtectedRoute>
@@ -388,9 +422,14 @@ export default function PeriodsPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold">School Years & Class Periods</h1>
-            <p className="text-muted-foreground">Organize your classes by school year</p>
+            <p className="text-muted-foreground">
+              Organize your classes by school year
+            </p>
           </div>
-          <Button onClick={handleAddSchoolYear} className="flex items-center gap-2">
+          <Button
+            onClick={handleAddSchoolYear}
+            className="flex items-center gap-2"
+          >
             <PlusIcon size={16} />
             Add School Year
           </Button>
@@ -400,9 +439,12 @@ export default function PeriodsPage() {
           <Card>
             <CardContent className="text-center py-12">
               <GraduationCap className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">No School Years Yet</h3>
+              <h3 className="text-lg font-semibold mb-2">
+                No School Years Yet
+              </h3>
               <p className="text-muted-foreground mb-4">
-                Create your first school year to start organizing your class periods
+                Create your first school year to start organizing your class
+                periods
               </p>
               <Button onClick={handleAddSchoolYear}>
                 <PlusIcon size={16} className="mr-2" />
@@ -415,7 +457,7 @@ export default function PeriodsPage() {
             {schoolYears.map((schoolYear) => {
               const yearPeriods = getPeriodsForYear(schoolYear.id);
               const isExpanded = expandedYears.has(schoolYear.id);
-              
+
               return (
                 <Card key={schoolYear.id}>
                   <CardHeader>
@@ -445,9 +487,13 @@ export default function PeriodsPage() {
                           </CardTitle>
                           <CardDescription>
                             {schoolYear.startDate && schoolYear.endDate && (
-                              <>From {schoolYear.startDate} to {schoolYear.endDate}</>
+                              <>
+                                From {schoolYear.startDate} to{" "}
+                                {schoolYear.endDate}
+                              </>
                             )}
-                            • {yearPeriods.length} period{yearPeriods.length !== 1 ? 's' : ''}
+                            • {yearPeriods.length} period
+                            {yearPeriods.length !== 1 ? "s" : ""}
                           </CardDescription>
                         </div>
                       </div>
@@ -481,13 +527,15 @@ export default function PeriodsPage() {
                       </div>
                     </div>
                   </CardHeader>
-                  
+
                   {isExpanded && (
                     <CardContent>
                       {yearPeriods.length === 0 ? (
                         <div className="text-center py-8 border-2 border-dashed border-muted rounded-lg">
                           <Calendar className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-                          <p className="text-muted-foreground mb-3">No periods in this school year</p>
+                          <p className="text-muted-foreground mb-3">
+                            No periods in this school year
+                          </p>
                           <Button
                             variant="outline"
                             size="sm"
@@ -505,27 +553,33 @@ export default function PeriodsPage() {
                               <TableHead>Start Time</TableHead>
                               <TableHead>End Time</TableHead>
                               <TableHead>Day</TableHead>
-                              <TableHead className="text-right">Actions</TableHead>
+                              <TableHead className="text-right">
+                                Actions
+                              </TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
                             {yearPeriods.map((period) => (
                               <TableRow key={period.id}>
-                                <TableCell className="font-medium">{period.name}</TableCell>
+                                <TableCell className="font-medium">
+                                  {period.name}
+                                </TableCell>
                                 <TableCell>{period.startTime}</TableCell>
                                 <TableCell>{period.endTime}</TableCell>
                                 <TableCell>
                                   {period.dayOfWeek || "All days"}
                                   {period.earlyRelease && (
                                     <div className="text-xs text-muted-foreground mt-1">
-                                      Early: {period.earlyRelease.startTime}–{period.earlyRelease.endTime} (
+                                      Early: {period.earlyRelease.startTime}–
+                                      {period.earlyRelease.endTime} (
                                       {{
                                         mon: "Mon",
                                         tue: "Tue",
                                         wed: "Wed",
                                         thu: "Thu",
                                         fri: "Fri",
-                                      }[period.earlyRelease.dayOfWeek] || period.earlyRelease.dayOfWeek}
+                                      }[period.earlyRelease.dayOfWeek] ||
+                                        period.earlyRelease.dayOfWeek}
                                       )
                                     </div>
                                   )}
@@ -577,7 +631,12 @@ export default function PeriodsPage() {
                 <Label>School Year Name *</Label>
                 <Input
                   value={yearFormData.name}
-                  onChange={(e) => setYearFormData(prev => ({ ...prev, name: e.target.value }))}
+                  onChange={(e) =>
+                    setYearFormData((prev) => ({
+                      ...prev,
+                      name: e.target.value,
+                    }))
+                  }
                   placeholder="e.g., 2024-2025"
                 />
               </div>
@@ -586,7 +645,9 @@ export default function PeriodsPage() {
                   <Label>Start Date</Label>
                   <CustomDatePicker
                     selected={yearFormData.startDate}
-                    onChange={(date) => setYearFormData(prev => ({ ...prev, startDate: date }))}
+                    onChange={(date) =>
+                      setYearFormData((prev) => ({ ...prev, startDate: date }))
+                    }
                     placeholder="Select start date"
                   />
                 </div>
@@ -594,7 +655,9 @@ export default function PeriodsPage() {
                   <Label>End Date</Label>
                   <CustomDatePicker
                     selected={yearFormData.endDate}
-                    onChange={(date) => setYearFormData(prev => ({ ...prev, endDate: date }))}
+                    onChange={(date) =>
+                      setYearFormData((prev) => ({ ...prev, endDate: date }))
+                    }
                     placeholder="Select end date"
                   />
                 </div>
@@ -604,12 +667,20 @@ export default function PeriodsPage() {
                   type="checkbox"
                   id="isActive"
                   checked={yearFormData.isActive}
-                  onChange={(e) => setYearFormData(prev => ({ ...prev, isActive: e.target.checked }))}
+                  onChange={(e) =>
+                    setYearFormData((prev) => ({
+                      ...prev,
+                      isActive: e.target.checked,
+                    }))
+                  }
                 />
                 <Label htmlFor="isActive">Mark as active school year</Label>
               </div>
               <div className="flex justify-end gap-2 pt-4">
-                <Button variant="outline" onClick={() => setIsAddYearModalOpen(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsAddYearModalOpen(false)}
+                >
                   Cancel
                 </Button>
                 <Button onClick={() => saveSchoolYear(false)}>
@@ -621,7 +692,10 @@ export default function PeriodsPage() {
         </Dialog>
 
         {/* Edit School Year Dialog */}
-        <Dialog open={isEditYearModalOpen} onOpenChange={setIsEditYearModalOpen}>
+        <Dialog
+          open={isEditYearModalOpen}
+          onOpenChange={setIsEditYearModalOpen}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Edit School Year</DialogTitle>
@@ -631,7 +705,12 @@ export default function PeriodsPage() {
                 <Label>School Year Name *</Label>
                 <Input
                   value={yearFormData.name}
-                  onChange={(e) => setYearFormData(prev => ({ ...prev, name: e.target.value }))}
+                  onChange={(e) =>
+                    setYearFormData((prev) => ({
+                      ...prev,
+                      name: e.target.value,
+                    }))
+                  }
                   placeholder="e.g., 2024-2025"
                 />
               </div>
@@ -640,7 +719,9 @@ export default function PeriodsPage() {
                   <Label>Start Date</Label>
                   <CustomDatePicker
                     selected={yearFormData.startDate}
-                    onChange={(date) => setYearFormData(prev => ({ ...prev, startDate: date }))}
+                    onChange={(date) =>
+                      setYearFormData((prev) => ({ ...prev, startDate: date }))
+                    }
                     placeholder="Select start date"
                   />
                 </div>
@@ -648,7 +729,9 @@ export default function PeriodsPage() {
                   <Label>End Date</Label>
                   <CustomDatePicker
                     selected={yearFormData.endDate}
-                    onChange={(date) => setYearFormData(prev => ({ ...prev, endDate: date }))}
+                    onChange={(date) =>
+                      setYearFormData((prev) => ({ ...prev, endDate: date }))
+                    }
                     placeholder="Select end date"
                   />
                 </div>
@@ -658,12 +741,20 @@ export default function PeriodsPage() {
                   type="checkbox"
                   id="isActiveEdit"
                   checked={yearFormData.isActive}
-                  onChange={(e) => setYearFormData(prev => ({ ...prev, isActive: e.target.checked }))}
+                  onChange={(e) =>
+                    setYearFormData((prev) => ({
+                      ...prev,
+                      isActive: e.target.checked,
+                    }))
+                  }
                 />
                 <Label htmlFor="isActiveEdit">Mark as active school year</Label>
               </div>
               <div className="flex justify-end gap-2 pt-4">
-                <Button variant="outline" onClick={() => setIsEditYearModalOpen(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditYearModalOpen(false)}
+                >
                   Cancel
                 </Button>
                 <Button onClick={() => saveSchoolYear(true)}>
@@ -675,7 +766,10 @@ export default function PeriodsPage() {
         </Dialog>
 
         {/* Add Period Dialog */}
-        <Dialog open={isAddPeriodModalOpen} onOpenChange={setIsAddPeriodModalOpen}>
+        <Dialog
+          open={isAddPeriodModalOpen}
+          onOpenChange={setIsAddPeriodModalOpen}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Add Class Period</DialogTitle>
@@ -685,7 +779,12 @@ export default function PeriodsPage() {
                 <Label>Period Name *</Label>
                 <Input
                   value={periodFormData.name}
-                  onChange={(e) => setPeriodFormData(prev => ({ ...prev, name: e.target.value }))}
+                  onChange={(e) =>
+                    setPeriodFormData((prev) => ({
+                      ...prev,
+                      name: e.target.value,
+                    }))
+                  }
                   placeholder="e.g., Period 1, Math Class"
                 />
               </div>
@@ -695,7 +794,12 @@ export default function PeriodsPage() {
                   <Input
                     type="time"
                     value={periodFormData.startTime}
-                    onChange={(e) => setPeriodFormData(prev => ({ ...prev, startTime: e.target.value }))}
+                    onChange={(e) =>
+                      setPeriodFormData((prev) => ({
+                        ...prev,
+                        startTime: e.target.value,
+                      }))
+                    }
                   />
                 </div>
                 <div className="space-y-2">
@@ -703,7 +807,12 @@ export default function PeriodsPage() {
                   <Input
                     type="time"
                     value={periodFormData.endTime}
-                    onChange={(e) => setPeriodFormData(prev => ({ ...prev, endTime: e.target.value }))}
+                    onChange={(e) =>
+                      setPeriodFormData((prev) => ({
+                        ...prev,
+                        endTime: e.target.value,
+                      }))
+                    }
                   />
                 </div>
               </div>
@@ -716,10 +825,15 @@ export default function PeriodsPage() {
                     type="checkbox"
                     checked={periodFormData.earlyReleaseEnabled}
                     onChange={(e) =>
-                      setPeriodFormData((p) => ({ ...p, earlyReleaseEnabled: e.target.checked }))
+                      setPeriodFormData((p) => ({
+                        ...p,
+                        earlyReleaseEnabled: e.target.checked,
+                      }))
                     }
                   />
-                  <Label htmlFor="earlyReleaseEnabled">Has early release schedule</Label>
+                  <Label htmlFor="earlyReleaseEnabled">
+                    Has early release schedule
+                  </Label>
                 </div>
 
                 {periodFormData.earlyReleaseEnabled && (
@@ -730,7 +844,10 @@ export default function PeriodsPage() {
                         className="w-full border rounded-md h-9 px-3"
                         value={periodFormData.earlyReleaseDayOfWeek}
                         onChange={(e) =>
-                          setPeriodFormData((p) => ({ ...p, earlyReleaseDayOfWeek: e.target.value }))
+                          setPeriodFormData((p) => ({
+                            ...p,
+                            earlyReleaseDayOfWeek: e.target.value,
+                          }))
                         }
                       >
                         <option value="mon">Monday</option>
@@ -746,7 +863,10 @@ export default function PeriodsPage() {
                         type="time"
                         value={periodFormData.earlyReleaseStartTime}
                         onChange={(e) =>
-                          setPeriodFormData((p) => ({ ...p, earlyReleaseStartTime: e.target.value }))
+                          setPeriodFormData((p) => ({
+                            ...p,
+                            earlyReleaseStartTime: e.target.value,
+                          }))
                         }
                       />
                     </div>
@@ -756,7 +876,10 @@ export default function PeriodsPage() {
                         type="time"
                         value={periodFormData.earlyReleaseEndTime}
                         onChange={(e) =>
-                          setPeriodFormData((p) => ({ ...p, earlyReleaseEndTime: e.target.value }))
+                          setPeriodFormData((p) => ({
+                            ...p,
+                            earlyReleaseEndTime: e.target.value,
+                          }))
                         }
                       />
                     </div>
@@ -765,19 +888,23 @@ export default function PeriodsPage() {
               </div>
 
               <div className="flex justify-end gap-2 pt-4">
-                <Button variant="outline" onClick={() => setIsAddPeriodModalOpen(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsAddPeriodModalOpen(false)}
+                >
                   Cancel
                 </Button>
-                <Button onClick={() => savePeriod(false)}>
-                  Add Period
-                </Button>
+                <Button onClick={() => savePeriod(false)}>Add Period</Button>
               </div>
             </div>
           </DialogContent>
         </Dialog>
 
         {/* Edit Period Dialog */}
-        <Dialog open={isEditPeriodModalOpen} onOpenChange={setIsEditPeriodModalOpen}>
+        <Dialog
+          open={isEditPeriodModalOpen}
+          onOpenChange={setIsEditPeriodModalOpen}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Edit Class Period</DialogTitle>
@@ -787,7 +914,12 @@ export default function PeriodsPage() {
                 <Label>Period Name *</Label>
                 <Input
                   value={periodFormData.name}
-                  onChange={(e) => setPeriodFormData(prev => ({ ...prev, name: e.target.value }))}
+                  onChange={(e) =>
+                    setPeriodFormData((prev) => ({
+                      ...prev,
+                      name: e.target.value,
+                    }))
+                  }
                   placeholder="e.g., Period 1, Math Class"
                 />
               </div>
@@ -797,7 +929,12 @@ export default function PeriodsPage() {
                   <Input
                     type="time"
                     value={periodFormData.startTime}
-                    onChange={(e) => setPeriodFormData(prev => ({ ...prev, startTime: e.target.value }))}
+                    onChange={(e) =>
+                      setPeriodFormData((prev) => ({
+                        ...prev,
+                        startTime: e.target.value,
+                      }))
+                    }
                   />
                 </div>
                 <div className="space-y-2">
@@ -805,7 +942,12 @@ export default function PeriodsPage() {
                   <Input
                     type="time"
                     value={periodFormData.endTime}
-                    onChange={(e) => setPeriodFormData(prev => ({ ...prev, endTime: e.target.value }))}
+                    onChange={(e) =>
+                      setPeriodFormData((prev) => ({
+                        ...prev,
+                        endTime: e.target.value,
+                      }))
+                    }
                   />
                 </div>
               </div>
@@ -818,10 +960,15 @@ export default function PeriodsPage() {
                     type="checkbox"
                     checked={periodFormData.earlyReleaseEnabled}
                     onChange={(e) =>
-                      setPeriodFormData((p) => ({ ...p, earlyReleaseEnabled: e.target.checked }))
+                      setPeriodFormData((p) => ({
+                        ...p,
+                        earlyReleaseEnabled: e.target.checked,
+                      }))
                     }
                   />
-                  <Label htmlFor="earlyReleaseEnabledEdit">Has early release schedule</Label>
+                  <Label htmlFor="earlyReleaseEnabledEdit">
+                    Has early release schedule
+                  </Label>
                 </div>
 
                 {periodFormData.earlyReleaseEnabled && (
@@ -832,7 +979,10 @@ export default function PeriodsPage() {
                         className="w-full border rounded-md h-9 px-3"
                         value={periodFormData.earlyReleaseDayOfWeek}
                         onChange={(e) =>
-                          setPeriodFormData((p) => ({ ...p, earlyReleaseDayOfWeek: e.target.value }))
+                          setPeriodFormData((p) => ({
+                            ...p,
+                            earlyReleaseDayOfWeek: e.target.value,
+                          }))
                         }
                       >
                         <option value="mon">Monday</option>
@@ -848,7 +998,10 @@ export default function PeriodsPage() {
                         type="time"
                         value={periodFormData.earlyReleaseStartTime}
                         onChange={(e) =>
-                          setPeriodFormData((p) => ({ ...p, earlyReleaseStartTime: e.target.value }))
+                          setPeriodFormData((p) => ({
+                            ...p,
+                            earlyReleaseStartTime: e.target.value,
+                          }))
                         }
                       />
                     </div>
@@ -858,7 +1011,10 @@ export default function PeriodsPage() {
                         type="time"
                         value={periodFormData.earlyReleaseEndTime}
                         onChange={(e) =>
-                          setPeriodFormData((p) => ({ ...p, earlyReleaseEndTime: e.target.value }))
+                          setPeriodFormData((p) => ({
+                            ...p,
+                            earlyReleaseEndTime: e.target.value,
+                          }))
                         }
                       />
                     </div>
@@ -867,12 +1023,13 @@ export default function PeriodsPage() {
               </div>
 
               <div className="flex justify-end gap-2 pt-4">
-                <Button variant="outline" onClick={() => setIsEditPeriodModalOpen(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setIsEditPeriodModalOpen(false)}
+                >
                   Cancel
                 </Button>
-                <Button onClick={() => savePeriod(true)}>
-                  Update Period
-                </Button>
+                <Button onClick={() => savePeriod(true)}>Update Period</Button>
               </div>
             </div>
           </DialogContent>
@@ -884,12 +1041,16 @@ export default function PeriodsPage() {
             <AlertDialogHeader>
               <AlertDialogTitle>Delete School Year</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to delete this school year? This will also affect any students assigned to periods within this year.
+                Are you sure you want to delete this school year? This will also
+                affect any students assigned to periods within this year.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={deleteSchoolYear} className="bg-red-500 hover:bg-red-600">
+              <AlertDialogAction
+                onClick={deleteSchoolYear}
+                className="bg-red-500 hover:bg-red-600"
+              >
                 Delete
               </AlertDialogAction>
             </AlertDialogFooter>
@@ -897,17 +1058,24 @@ export default function PeriodsPage() {
         </AlertDialog>
 
         {/* Delete Period Dialog */}
-        <AlertDialog open={deletePeriodDialog} onOpenChange={setDeletePeriodDialog}>
+        <AlertDialog
+          open={deletePeriodDialog}
+          onOpenChange={setDeletePeriodDialog}
+        >
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete Period</AlertDialogTitle>
               <AlertDialogDescription>
-                Are you sure you want to delete this period? This may affect students assigned to it.
+                Are you sure you want to delete this period? This may affect
+                students assigned to it.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={deletePeriod} className="bg-red-500 hover:bg-red-600">
+              <AlertDialogAction
+                onClick={deletePeriod}
+                className="bg-red-500 hover:bg-red-600"
+              >
                 Delete
               </AlertDialogAction>
             </AlertDialogFooter>
