@@ -63,7 +63,7 @@ export function Navbar() {
     { name: "Tracking", href: "/tracking", icon: <Clock size={18} /> },
     { name: "Reports", href: "/reports", icon: <BarChart size={18} /> },
     {
-      name: "Class Layout",
+      name: "Seating Chart",
       href: "/class-layout",
       icon: <LayoutGrid size={18} />,
     },

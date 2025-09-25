@@ -224,6 +224,10 @@ const seatLabelFromDisplayName = (displayName: string): string => {
 /* ------------------------------ Component ------------------------------ */
 const NONE_VALUE = "__unassigned__";
 
+// helper: always use defaultSeatColor when resetting a seat
+const getDefaultSeatColor = (lay?: RoomLayoutData) =>
+  lay?.defaultSeatColor ?? "#3e4b5a";
+
 export default function ClassLayoutPage() {
   const { currentUser } = useAuth();
 
@@ -239,7 +243,7 @@ export default function ClassLayoutPage() {
   const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null);
 
   /* Filters/top controls */
-  const [pageTitle] = useState("Class Seating");
+
   const [periodId, setPeriodId] = useState<string>("all");
 
   /* Firestore-driven */
@@ -555,23 +559,39 @@ export default function ClassLayoutPage() {
     const name = e.dataTransfer.getData("text/plain");
     if (!layout || !name || cell.type !== "seat") return;
 
+    // determine the previous seat (if any) for this student BEFORE we change state
+    const prevSeatId =
+      Object.entries(assignments).find(([, n]) => n === name)?.[0] ?? null;
+
     setAssignments((prev) => {
       const copy = { ...prev };
+      // remove any existing placement for this student
       for (const k of Object.keys(copy)) {
         if (copy[k] === name) delete copy[k];
       }
+      // set new placement
       copy[cell.id] = name;
       return copy;
     });
 
-    // ✅ Color the seat when a student is added
+    // ✅ Update colors: new seat -> green; previous seat (if any) -> default gray
     const next = structuredClone(layout) as RoomLayoutData;
+
+    // reset previous seat color to default gray
+    if (prevSeatId) {
+      const pIdx = next.cells.findIndex((c) => c.id === prevSeatId);
+      if (pIdx >= 0 && next.cells[pIdx].type === "seat") {
+        next.cells[pIdx].color = getDefaultSeatColor(layout);
+      }
+    }
+
+    // color the new seat green
     const idx = next.cells.findIndex((c) => c.id === cell.id);
     if (idx >= 0 && next.cells[idx].type === "seat") {
       next.cells[idx].color = "#34d399";
-      setLayout(next);
     }
 
+    setLayout(next);
     setSelectedSeatId(cell.id);
     e.preventDefault();
   };
@@ -636,18 +656,19 @@ export default function ClassLayoutPage() {
       order = alt.concat(unknown);
     }
 
-    const next: Record<string, string> = {};
+    const nextAssignments: Record<string, string> = {};
     const count = Math.min(order.length, seats.length);
-    for (let i = 0; i < count; i++) next[seats[i].id] = order[i];
+    for (let i = 0; i < count; i++) nextAssignments[seats[i].id] = order[i];
 
-    setAssignments(next);
+    setAssignments(nextAssignments);
 
-    // ✅ NEW: color all newly assigned seats to #34d399 (default for seated)
+    // ✅ Color assigned seats green; unassigned seats reset to default gray
     if (layout) {
       const updated = structuredClone(layout) as RoomLayoutData;
+      const def = getDefaultSeatColor(layout);
       updated.cells = updated.cells.map((c) =>
         c.type === "seat"
-          ? { ...c, color: next[c.id] ? "#34d399" : c.color }
+          ? { ...c, color: nextAssignments[c.id] ? "#34d399" : def }
           : c
       );
       setLayout(updated);
@@ -708,8 +729,6 @@ export default function ClassLayoutPage() {
   /* --------------------------------- UI --------------------------------- */
   return (
     <div className="w-full mx-auto px-4 py-6 space-y-4">
-      <h1 className="text-xl font-semibold">{pageTitle}</h1>
-
       <Tabs defaultValue="arrangement" className="space-y-4">
         <TabsList>
           <TabsTrigger value="arrangement">Sitting Arrangement</TabsTrigger>
@@ -953,19 +972,30 @@ export default function ClassLayoutPage() {
                                   : "Empty"
                               }
                               onDoubleClick={() => {
-                                if (!name) return;
+                                if (!name || !layout) return;
                                 setAssignments((prev) => {
                                   const copy = { ...prev };
                                   delete copy[c.id];
                                   return copy;
                                 });
+                                // reset this seat color back to default gray on unassign
+                                const next = structuredClone(
+                                  layout
+                                ) as RoomLayoutData;
+                                const idx = next.cells.findIndex(
+                                  (x) => x.id === c.id
+                                );
+                                if (
+                                  idx >= 0 &&
+                                  next.cells[idx].type === "seat"
+                                ) {
+                                  next.cells[idx].color =
+                                    getDefaultSeatColor(layout);
+                                  setLayout(next);
+                                }
                               }}
                             >
-                              <div className="absolute top-1 left-1 text-[9px] opacity-70 text-white">
-                                {c.row + 1}
-                                {String.fromCharCode(65 + c.col)}
-                              </div>
-
+                              {/* Seat numbers removed to improve name visibility */}
                               {name ? (
                                 <div
                                   draggable
