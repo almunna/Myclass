@@ -455,7 +455,7 @@ export default function LandingPage() {
                 <CardTitle className="text-xl">Monthly Plan</CardTitle>
                 <CardDescription>Perfect for getting started</CardDescription>
                 <div className="text-3xl font-bold text-gray-900 mt-4">
-                  $1.50
+                  $2.50
                 </div>
                 <div className="text-gray-500">per month</div>
               </CardHeader>
@@ -503,7 +503,7 @@ export default function LandingPage() {
                   Save money with yearly billing
                 </CardDescription>
                 <div className="text-3xl font-bold text-gray-900 mt-4">
-                  $7.99
+                  $9.99
                 </div>
                 <div className="text-gray-500">per year</div>
                 <div className="text-sm text-green-600 font-medium mt-1">

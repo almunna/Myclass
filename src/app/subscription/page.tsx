@@ -53,7 +53,7 @@ const stripePromise = loadStripe(
 const pricingPlans = [
   {
     name: "Monthly Pro",
-    price: 1.5,
+    price: 2.5,
     description:
       "Perfect for trying out our premium features with full flexibility.",
     features: [
@@ -75,7 +75,7 @@ const pricingPlans = [
   },
   {
     name: "Annual Pro",
-    price: 7.99,
+    price: 9.99,
     description:
       "Best value plan with significant savings for committed educators.",
     features: [
