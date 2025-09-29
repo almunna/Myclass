@@ -48,10 +48,12 @@ type BehaviorRow = {
 };
 
 function toSortableDate(r: BehaviorRow): Date {
+  // 🔧 Parse as LOCAL TIME to avoid UTC/local mismatches during filtering
   if (r?.date) {
-    const t = r.time ?? "00:00";
-    const d = new Date(`${r.date}T${t}:00`);
-    if (!isNaN(d.getTime())) return d;
+    const [y, m, d] = r.date.split("-").map(Number);
+    const [hh, mi] = (r.time ?? "00:00").split(":").map(Number);
+    const local = new Date(y, (m || 1) - 1, d || 1, hh || 0, mi || 0, 0, 0);
+    if (!isNaN(local.getTime())) return local;
   }
   const ts = r?.createdAt as any;
   if (ts && typeof ts.toDate === "function") return ts.toDate();
@@ -76,7 +78,9 @@ function displayDate(r: BehaviorRow): { dateText: string; timeText?: string } {
 // ---------- Suspense wrapper page (NEW) ----------
 export default function BehaviorHistoryPage() {
   return (
-    <Suspense fallback={<main className="container mx-auto px-4 py-8">Loading…</main>}>
+    <Suspense
+      fallback={<main className="container mx-auto px-4 py-8">Loading…</main>}
+    >
       <BehaviorHistoryBody />
     </Suspense>
   );
@@ -94,7 +98,9 @@ function BehaviorHistoryBody() {
   // Filters
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
-  const [typeFilter, setTypeFilter] = useState<"all" | "positive" | "negative">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "positive" | "negative">(
+    "all"
+  );
   const [behaviorFilter, setBehaviorFilter] = useState<string>("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
 
@@ -103,35 +109,49 @@ function BehaviorHistoryBody() {
     if (!studentId) return;
     (async () => {
       setLoading(true);
-      const qRef = query(collection(db, "behaviors"), where("studentId", "==", studentId));
+      const qRef = query(
+        collection(db, "behaviors"),
+        where("studentId", "==", studentId)
+      );
       const snap = await getDocs(qRef);
       const list: BehaviorRow[] = snap.docs.map((d) => {
         const data = d.data() as Omit<BehaviorRow, "id">;
         return { id: d.id, ...data };
       });
-      list.sort((a, b) => toSortableDate(b).getTime() - toSortableDate(a).getTime());
+      list.sort(
+        (a, b) => toSortableDate(b).getTime() - toSortableDate(a).getTime()
+      );
       setRows(list);
       setLoading(false);
     })();
   }, [studentId]);
 
   // Totals
-  const positives = useMemo(() => rows.filter((r) => r.isPositive).length, [rows]);
-  const negatives = useMemo(() => rows.filter((r) => !r.isPositive).length, [rows]);
+  const positives = useMemo(
+    () => rows.filter((r) => r.isPositive).length,
+    [rows]
+  );
+  const negatives = useMemo(
+    () => rows.filter((r) => !r.isPositive).length,
+    [rows]
+  );
 
   // Apply filters
   const filteredRows = useMemo(() => {
     let list = rows.slice();
 
+    // replace the start/end date parsing in filteredRows with this:
     if (startDate) {
-      const s = new Date(startDate);
+      const [y, m, d] = startDate.split("-").map(Number);
+      const s = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0); // local midnight
       list = list.filter((r) => toSortableDate(r) >= s);
     }
     if (endDate) {
-      const e = new Date(endDate);
-      e.setHours(23, 59, 59, 999);
+      const [y, m, d] = endDate.split("-").map(Number);
+      const e = new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999); // local end of day
       list = list.filter((r) => toSortableDate(r) <= e);
     }
+
     if (typeFilter !== "all") {
       list = list.filter((r) =>
         typeFilter === "positive" ? r.isPositive : !r.isPositive
@@ -139,7 +159,8 @@ function BehaviorHistoryBody() {
     }
     if (behaviorFilter !== "all") {
       list = list.filter(
-        (r) => Array.isArray(r.behaviors) && r.behaviors.includes(behaviorFilter)
+        (r) =>
+          Array.isArray(r.behaviors) && r.behaviors.includes(behaviorFilter)
       );
     }
     if (actionFilter !== "all") {
@@ -148,7 +169,9 @@ function BehaviorHistoryBody() {
       );
     }
 
-    list.sort((a, b) => toSortableDate(b).getTime() - toSortableDate(a).getTime());
+    list.sort(
+      (a, b) => toSortableDate(b).getTime() - toSortableDate(a).getTime()
+    );
     return list;
   }, [rows, startDate, endDate, typeFilter, behaviorFilter, actionFilter]);
 
@@ -164,7 +187,8 @@ function BehaviorHistoryBody() {
       import("html2canvas").then((m) => m.default),
     ]);
 
-    const node = (document.querySelector("main") as HTMLElement) ?? document.body;
+    const node =
+      (document.querySelector("main") as HTMLElement) ?? document.body;
 
     const canvas = await html2canvas(node, {
       scale: 2,
@@ -341,7 +365,10 @@ function BehaviorHistoryBody() {
               </TableRow>
             ) : filteredRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground py-6">
+                <TableCell
+                  colSpan={5}
+                  className="text-center text-muted-foreground py-6"
+                >
                   No behavior records match your filters.
                 </TableCell>
               </TableRow>
@@ -354,7 +381,9 @@ function BehaviorHistoryBody() {
                       <div className="leading-tight">
                         <div>{dateText}</div>
                         {timeText && (
-                          <div className="text-xs text-muted-foreground">{timeText}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {timeText}
+                          </div>
                         )}
                       </div>
                     </TableCell>

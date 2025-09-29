@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,6 +58,19 @@ const DEFAULT_ACTIONS = [
   "Other",
 ];
 
+// 🔧 Helpers to format LOCAL date/time (avoid UTC shift from toISOString)
+function formatLocalDate(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+function formatLocalTime(d: Date) {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mi}`;
+}
+
 export function BehaviorModal({
   open,
   onClose,
@@ -67,9 +85,9 @@ export function BehaviorModal({
   const [positiveCount, setPositiveCount] = useState<number>(0);
   const [negativeCount, setNegativeCount] = useState<number>(0);
 
-  // Form state
-  const [date, setDate] = useState<string>(now.toISOString().slice(0, 10));
-  const [time, setTime] = useState<string>(now.toTimeString().slice(0, 5));
+  // Form state (use LOCAL date/time)
+  const [date, setDate] = useState<string>(formatLocalDate(now));
+  const [time, setTime] = useState<string>(formatLocalTime(now));
   const [selectedBehaviors, setSelectedBehaviors] = useState<string[]>([]);
   const [isPositive, setIsPositive] = useState<boolean>(true);
   const [notes, setNotes] = useState<string>("");
@@ -83,7 +101,10 @@ export function BehaviorModal({
 
     (async () => {
       try {
-        const qRef = query(collection(db, "behaviors"), where("studentId", "==", studentId));
+        const qRef = query(
+          collection(db, "behaviors"),
+          where("studentId", "==", studentId)
+        );
         const snapshot = await getDocs(qRef);
 
         let pos = 0;
@@ -181,7 +202,9 @@ export function BehaviorModal({
             <TableBody>
               <TableRow>
                 <TableCell className="font-medium">{studentName}</TableCell>
-                <TableCell className="text-muted-foreground">{studentId}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {studentId}
+                </TableCell>
                 <TableCell>
                   <span className="inline-flex items-center justify-center rounded-md px-2 py-1 text-sm font-semibold bg-green-100 text-green-700">
                     {positiveCount}
@@ -192,9 +215,13 @@ export function BehaviorModal({
                     {negativeCount}
                   </span>
                 </TableCell>
-                <TableCell className="text-muted-foreground">{periodsLabel}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {periodsLabel}
+                </TableCell>
                 <TableCell className="text-right">
-                  <Button size="sm" onClick={handleView}>View</Button>
+                  <Button size="sm" onClick={handleView}>
+                    View
+                  </Button>
                 </TableCell>
               </TableRow>
             </TableBody>
@@ -208,24 +235,38 @@ export function BehaviorModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <Label className="mb-1 block">Date</Label>
-                <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+                <Input
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
+                />
               </div>
               <div>
                 <Label className="mb-1 block">Time</Label>
-                <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+                <Input
+                  type="time"
+                  value={time}
+                  onChange={(e) => setTime(e.target.value)}
+                />
               </div>
             </div>
 
             {/* Select behavior(s) */}
             <div>
-              <Label className="mb-2 block">Select behavior (select all that apply)</Label>
+              <Label className="mb-2 block">
+                Select behavior (select all that apply)
+              </Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                 {DEFAULT_BEHAVIORS.map((b) => (
                   <Button
                     key={b}
                     type="button"
-                    variant={selectedBehaviors.includes(b) ? "default" : "outline"}
-                    onClick={() => toggle(selectedBehaviors, b, setSelectedBehaviors)}
+                    variant={
+                      selectedBehaviors.includes(b) ? "default" : "outline"
+                    }
+                    onClick={() =>
+                      toggle(selectedBehaviors, b, setSelectedBehaviors)
+                    }
                   >
                     {b}
                   </Button>
@@ -240,7 +281,11 @@ export function BehaviorModal({
                 <Button
                   type="button"
                   variant={isPositive ? "default" : "outline"}
-                  className={isPositive ? "bg-green-500 text-white hover:bg-green-500/90" : ""}
+                  className={
+                    isPositive
+                      ? "bg-green-500 text-white hover:bg-green-500/90"
+                      : ""
+                  }
                   onClick={() => setIsPositive(true)}
                 >
                   Positive
@@ -248,7 +293,11 @@ export function BehaviorModal({
                 <Button
                   type="button"
                   variant={!isPositive ? "default" : "outline"}
-                  className={!isPositive ? "bg-red-500 text-white hover:bg-red-500/90" : ""}
+                  className={
+                    !isPositive
+                      ? "bg-red-500 text-white hover:bg-red-500/90"
+                      : ""
+                  }
                   onClick={() => setIsPositive(false)}
                 >
                   Negative
@@ -269,14 +318,20 @@ export function BehaviorModal({
 
             {/* Actions taken */}
             <div>
-              <Label className="mb-2 block">Action taken (select all that apply)</Label>
+              <Label className="mb-2 block">
+                Action taken (select all that apply)
+              </Label>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                 {DEFAULT_ACTIONS.map((a) => (
                   <Button
                     key={a}
                     type="button"
-                    variant={selectedActions.includes(a) ? "default" : "outline"}
-                    onClick={() => toggle(selectedActions, a, setSelectedActions)}
+                    variant={
+                      selectedActions.includes(a) ? "default" : "outline"
+                    }
+                    onClick={() =>
+                      toggle(selectedActions, a, setSelectedActions)
+                    }
                   >
                     {a}
                   </Button>
