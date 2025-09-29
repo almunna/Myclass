@@ -30,7 +30,7 @@ import {
 import Link from "next/link";
 import { useAuth } from "@/hooks/useAuth";
 import { useState } from "react";
-
+import "react-day-picker/dist/style.css";
 export default function LandingPage() {
   const { currentUser } = useAuth();
   const [openFaqItems, setOpenFaqItems] = useState<number[]>([]);
@@ -507,7 +507,7 @@ export default function LandingPage() {
                 </div>
                 <div className="text-gray-500">per year</div>
                 <div className="text-sm text-green-600 font-medium mt-1">
-                  Save $10/year vs monthly
+                  Save $20/year vs monthly
                 </div>
               </CardHeader>
               <CardContent>

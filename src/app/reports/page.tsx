@@ -59,7 +59,6 @@ interface Student {
   id: string;
   name: string;
   studentId: string;
-  // Support both old (single period) and new (multiple periods) formats
   periodId?: string;
   periodName?: string;
   periods?: {
@@ -84,7 +83,6 @@ interface RoomExit {
   returnTime: any | null;
   duration: number | null;
   status: "out" | "returned";
-  /** NEW: destination (optional) */
   destination?: string | null;
 }
 
@@ -95,11 +93,12 @@ interface SummaryData {
   totalExits: number;
   totalDuration: number;
   averageDuration: number;
-  /** NEW: most frequent destination across this student's exits */
   topDestination?: string | null;
 }
 
-// For charts
+/** NEW: behavior counts per student (within selected date range) */
+type BehaviorCount = { pos: number; neg: number; total: number };
+
 interface ChartData {
   name: string;
   value: number;
@@ -115,6 +114,11 @@ export default function ReportsPage() {
   const [roomExits, setRoomExits] = useState<RoomExit[]>([]);
   const [filteredExits, setFilteredExits] = useState<RoomExit[]>([]);
   const [summaryData, setSummaryData] = useState<SummaryData[]>([]);
+
+  /** NEW: behavior counts map keyed by studentId */
+  const [behaviorCounts, setBehaviorCounts] = useState<
+    Record<string, { pos: number; neg: number; total: number }>
+  >({});
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -132,17 +136,36 @@ export default function ReportsPage() {
   const [studentDurationChartData, setStudentDurationChartData] = useState<
     ChartData[]
   >([]);
-  /** NEW: destinations chart data */
   const [destinationChartData, setDestinationChartData] = useState<ChartData[]>(
     []
   );
+
+  // ---- behavior chart datasets (top 8) ----
+  const positiveBehaviorChartData = summaryData
+    .map((row) => {
+      const bc = behaviorCounts[row.studentId] || { pos: 0, neg: 0, total: 0 };
+      return { name: row.studentName, value: bc.pos };
+    })
+    .filter((d) => d.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+
+  const negativeBehaviorChartData = summaryData
+    .map((row) => {
+      const bc = behaviorCounts[row.studentId] || { pos: 0, neg: 0, total: 0 };
+      return { name: row.studentName, value: bc.neg };
+    })
+    .filter((d) => d.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
 
   // UI states
   const [showCharts, setShowCharts] = useState(true);
 
   // Filter states
-  const [startDate, setStartDate] = useState<Date | undefined>(new Date());
-  const [endDate, setEndDate] = useState<Date | undefined>(new Date());
+  const [startDate, setStartDate] = useState<Date | undefined>();
+  const [endDate, setEndDate] = useState<Date | undefined>();
+
   const [selectedSchoolYearId, setSelectedSchoolYearId] =
     useState<string>("all");
   const [selectedPeriodId, setSelectedPeriodId] = useState<string>("all");
@@ -161,28 +184,20 @@ export default function ReportsPage() {
     "#FD7272",
   ];
 
-  // Initialize client-side rendering flag
   useEffect(() => {
     setIsClient(true);
   }, []);
 
-  // Fetch data on mount
   useEffect(() => {
     const fetchData = async () => {
       await Promise.all([fetchPeriods(), fetchStudents(), fetchRoomExits()]);
     };
-
-    if (isClient) {
-      fetchData();
-    }
+    if (isClient) fetchData();
   }, [isClient]);
 
-  // Fetch periods
   const fetchPeriods = async () => {
     if (!currentUser?.uid) return;
-
     try {
-      // Fetch school years first
       const schoolYearsQuery = query(
         collection(db, "schoolYears"),
         where("teacherId", "==", currentUser.uid)
@@ -193,7 +208,6 @@ export default function ReportsPage() {
         ...doc.data(),
       }));
 
-      // Create a query to filter periods by teacherId
       const periodsQuery = query(
         collection(db, "periods"),
         where("teacherId", "==", currentUser.uid)
@@ -201,7 +215,7 @@ export default function ReportsPage() {
       const periodsSnapshot = await getDocs(periodsQuery);
 
       const periodsList = periodsSnapshot.docs.map((doc) => {
-        const data = doc.data();
+        const data: any = doc.data();
         const schoolYear = schoolYearsList.find(
           (sy) => sy.id === data.schoolYearId
         );
@@ -212,7 +226,6 @@ export default function ReportsPage() {
         };
       }) as Period[];
 
-      // Sort by school year first, then by period name
       const sortedPeriods = periodsList.sort((a, b) => {
         if (a.schoolYearName !== b.schoolYearName) {
           return a.schoolYearName!.localeCompare(b.schoolYearName!);
@@ -229,12 +242,9 @@ export default function ReportsPage() {
     }
   };
 
-  // Fetch students
   const fetchStudents = async () => {
     if (!currentUser?.uid) return;
-
     try {
-      // Create a query to filter students by teacherId
       const studentsQuery = query(
         collection(db, "students"),
         where("teacherId", "==", currentUser.uid)
@@ -242,21 +252,18 @@ export default function ReportsPage() {
       const studentsSnapshot = await getDocs(studentsQuery);
 
       const studentsList = studentsSnapshot.docs.map((doc) => {
-        const data = doc.data();
+        const data: any = doc.data();
         const student: Student = {
           id: doc.id,
           name: data.name,
           studentId: data.studentId,
         };
-
-        // Handle both old (single period) and new (multiple periods) formats
         if (Array.isArray(data.periods)) {
           student.periods = data.periods;
         } else if (data.periodId) {
           student.periodId = data.periodId;
           student.periodName = data.periodName;
         }
-
         return student;
       });
 
@@ -266,12 +273,9 @@ export default function ReportsPage() {
     }
   };
 
-  // Fetch room exits
   const fetchRoomExits = async () => {
     if (!currentUser?.uid) return;
-
     try {
-      // Create a query to filter room exits by teacherId
       const exitsQuery = query(
         collection(db, "roomExits"),
         where("teacherId", "==", currentUser.uid)
@@ -288,7 +292,6 @@ export default function ReportsPage() {
         ...doc.data(),
       })) as RoomExit[];
 
-      // Sort by exit time
       exitsList.sort((a, b) => {
         const dateA = a.exitTime?.toDate
           ? a.exitTime.toDate()
@@ -296,7 +299,7 @@ export default function ReportsPage() {
         const dateB = b.exitTime?.toDate
           ? b.exitTime.toDate()
           : new Date(b.exitTime);
-        return dateB.getTime() - dateA.getTime(); // descending
+        return dateB.getTime() - dateA.getTime();
       });
 
       setRoomExits(exitsList);
@@ -305,6 +308,118 @@ export default function ReportsPage() {
       setRoomExits([]);
     }
   };
+
+  // Build behavior counts for the students shown in Summary (date range aware)
+  // Build behavior counts for the students shown in Summary (date range aware)
+  // Also supports behavior docs that use either `studentId` or `studentDocId`
+  useEffect(() => {
+    const fetchBehaviorCounts = async () => {
+      // who do we need counts for?
+      const idsFromSummary = summaryData
+        .map((s) => s.studentId)
+        .filter(Boolean);
+
+      if (idsFromSummary.length === 0) {
+        setBehaviorCounts({});
+        return;
+      }
+
+      // some projects store custom student codes; map both possibilities
+      const studentById = new Map(students.map((s) => [s.id, s]));
+      const candidateIds = new Set<string>(idsFromSummary);
+      for (const sid of idsFromSummary) {
+        const st = studentById.get(sid);
+        if (st?.studentId) candidateIds.add(st.studentId); // add custom ID too
+      }
+
+      // helper to chunk 'in' queries (max 10)
+      const chunk = <T,>(arr: T[], size: number) =>
+        Array.from({ length: Math.ceil(arr.length / size) }, (_, i) =>
+          arr.slice(i * size, i * size + size)
+        );
+
+      const idBatches = chunk(Array.from(candidateIds), 10);
+
+      // only apply date filtering when BOTH dates are selected
+      const hasDateFilter = !!(startDate && endDate);
+      const start =
+        hasDateFilter && new Date(new Date(startDate!).setHours(0, 0, 0, 0));
+      const end =
+        hasDateFilter && new Date(new Date(endDate!).setHours(23, 59, 59, 999));
+
+      const counts: Record<
+        string,
+        { pos: number; neg: number; total: number }
+      > = {};
+
+      // We’ll try both possible field names used in behavior docs
+      const possibleKeys: Array<"studentId" | "studentDocId"> = [
+        "studentId",
+        "studentDocId",
+      ];
+
+      for (const key of possibleKeys) {
+        for (const batch of idBatches) {
+          try {
+            const qRef = query(
+              collection(db, "behaviors"),
+              where(key, "in", batch)
+            );
+            const snap = await getDocs(qRef);
+
+            snap.docs.forEach((d) => {
+              const data: any = d.data();
+              const sidFromDoc: string | undefined =
+                data.studentId || data.studentDocId;
+              if (!sidFromDoc) return;
+
+              // normalize to whatever IDs are in candidateIds
+              if (!candidateIds.has(sidFromDoc)) return;
+
+              // build timestamp
+              let when: Date | null = null;
+              if (data.date) {
+                const t = data.time ? `${data.time}:00` : "00:00:00";
+                const dd = new Date(`${data.date}T${t}`);
+                when = isNaN(dd.getTime()) ? null : dd;
+              } else if (data.createdAt?.toDate) {
+                when = data.createdAt.toDate();
+              }
+
+              // apply date filter only if both dates are selected and we have a time
+              if (hasDateFilter && when) {
+                if (when < (start as Date) || when > (end as Date)) return;
+              }
+
+              const isPos = !!data.isPositive;
+              if (!counts[sidFromDoc])
+                counts[sidFromDoc] = { pos: 0, neg: 0, total: 0 };
+              if (isPos) counts[sidFromDoc].pos += 1;
+              else counts[sidFromDoc].neg += 1;
+              counts[sidFromDoc].total =
+                counts[sidFromDoc].pos + counts[sidFromDoc].neg;
+            });
+          } catch (e) {
+            // ignore if this field name doesn't exist in your schema; we'll try the other one
+            // console.warn(`Behavior query failed on key ${key}:`, e);
+          }
+        }
+      }
+
+      // If we counted against custom IDs, also mirror to the doc IDs used in summary rows
+      for (const row of summaryData) {
+        const st = studentById.get(row.studentId);
+        if (st?.studentId && counts[st.studentId] && !counts[row.studentId]) {
+          counts[row.studentId] = counts[st.studentId];
+        }
+      }
+
+      setBehaviorCounts(counts);
+    };
+
+    fetchBehaviorCounts();
+    // rerun when the visible students change, date filter changes, or students list changes
+  }, [summaryData, startDate, endDate, students, db]);
 
   // Apply filters and update data
   useEffect(() => {
@@ -356,14 +471,9 @@ export default function ReportsPage() {
     }
 
     setFilteredExits(filtered);
-
-    // Reset to first page when filters change
     setCurrentPage(1);
 
-    // Generate summary data
     generateSummaryData(filtered);
-
-    // Generate chart data
     generateChartData(filtered);
   }, [
     roomExits,
@@ -378,12 +488,9 @@ export default function ReportsPage() {
 
   // Generate summary data from filtered exits
   const generateSummaryData = (filteredExits: RoomExit[]) => {
-    // Create a map to track data per student
     const studentMap = new Map<string, SummaryData>();
-    // Track destination frequency per student
     const destMap = new Map<string, Map<string, number>>();
 
-    // Process each exit
     filteredExits.forEach((exit) => {
       const key = exit.studentId;
 
@@ -405,14 +512,12 @@ export default function ReportsPage() {
         record.totalDuration += exit.duration;
       }
 
-      // Count destination
       const dest = (exit.destination || "Unknown") as string;
       if (!destMap.has(key)) destMap.set(key, new Map());
       const m = destMap.get(key)!;
       m.set(dest, (m.get(dest) || 0) + 1);
     });
 
-    // Calculate averages and top destination
     const summaryArray = Array.from(studentMap.values()).map((record) => {
       if (record.totalExits > 0 && record.totalDuration > 0) {
         record.averageDuration = Math.round(
@@ -438,15 +543,12 @@ export default function ReportsPage() {
       return record;
     });
 
-    // Sort by name
     summaryArray.sort((a, b) => a.studentName.localeCompare(b.studentName));
-
     setSummaryData(summaryArray);
   };
 
   // Generate chart data
   const generateChartData = (filteredExits: RoomExit[]) => {
-    // 1. Student exits chart - top students by exit count
     const studentExitsMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
       const count = studentExitsMap.get(exit.studentName) || 0;
@@ -459,7 +561,6 @@ export default function ReportsPage() {
       .slice(0, 8);
     setStudentExitsChartData(studentChartData);
 
-    // 2. Period exits chart
     const periodExitsMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
       const periodName = exit.periodName || "No Period";
@@ -471,7 +572,6 @@ export default function ReportsPage() {
     );
     setPeriodExitsChartData(periodChartData);
 
-    // 3. Time distribution (by hour)
     const timeMap = new Map<number, number>();
     for (let i = 0; i < 24; i++) timeMap.set(i, 0);
     filteredExits.forEach((exit) => {
@@ -490,7 +590,6 @@ export default function ReportsPage() {
       .filter((item) => item.exits > 0);
     setTimeDistributionData(timeData);
 
-    // 4. Day of week distribution
     const dayMap = new Map<number, number>();
     for (let i = 0; i < 7; i++) dayMap.set(i, 0);
     filteredExits.forEach((exit) => {
@@ -518,7 +617,6 @@ export default function ReportsPage() {
       .filter((item) => item.exits > 0);
     setDayDistributionData(dayData);
 
-    // 5. Student duration chart
     const studentDurationMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
       if (exit.status === "returned" && exit.duration !== null) {
@@ -534,12 +632,28 @@ export default function ReportsPage() {
       .slice(0, 8);
     setStudentDurationChartData(studentDurationData);
 
-    // 6. NEW: Destination distribution
     const destMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
-      const dest = (exit.destination || "Unknown") as string;
+      let dest = (exit.destination ?? "Unknown").toString().trim();
+      if (!dest) dest = "Unknown";
+
+      // Normalize special cases
+      if (dest.toLowerCase() === "dean's" || dest.toLowerCase() === "deans") {
+        dest = "Dean's"; // ✅ force correct spelling
+      } else if (
+        dest.toLowerCase() === "frontoffice" ||
+        dest === "frontOffice"
+      ) {
+        dest = "Front Office"; // ✅ add space + capitalization
+      } else {
+        // Generic: lowercase then capitalize first letter
+        dest = dest.toLowerCase();
+        dest = dest.charAt(0).toUpperCase() + dest.slice(1);
+      }
+
       destMap.set(dest, (destMap.get(dest) || 0) + 1);
     });
+
     const destData = Array.from(destMap.entries()).map(([name, value]) => ({
       name,
       value,
@@ -547,7 +661,6 @@ export default function ReportsPage() {
     setDestinationChartData(destData);
   };
 
-  // Format date and time from timestamp
   const formatDateTime = (timestamp: any) => {
     if (!timestamp) return "-";
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
@@ -560,13 +673,11 @@ export default function ReportsPage() {
     });
   };
 
-  // Format duration in minutes
   const formatDuration = (minutes: number | null) => {
     if (!minutes && minutes !== 0) return "-";
     return `${minutes} min`;
   };
 
-  // Export as CSV
   const exportToCsv = () => {
     const escapeCSV = (value: string | number | null | undefined) => {
       if (value === null || value === undefined) return "";
@@ -580,7 +691,7 @@ export default function ReportsPage() {
       let filename = "";
 
       if (activeTab === "summary") {
-        // Summary with Top Destination
+        // NOTE: CSV columns unchanged per your request.
         csvContent =
           "Student Name,Period,Total Exits,Total Duration (min),Average Duration (min),Top Destination\n";
         summaryData.forEach((row) => {
@@ -596,7 +707,6 @@ export default function ReportsPage() {
         });
         filename = "summary-report.csv";
       } else {
-        // Detailed with Destination column
         csvContent =
           "Student Name,Period,Destination,Exit Date/Time,Return Date/Time,Duration (min),Status\n";
         filteredExits.forEach((exit) => {
@@ -614,7 +724,9 @@ export default function ReportsPage() {
         filename = "detailed-report.csv";
       }
 
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const blob = new Blob([csvContent], {
+        type: "text/csv;charset=utf-8;",
+      });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.setAttribute("href", url);
@@ -654,6 +766,7 @@ export default function ReportsPage() {
       </ProtectedRoute>
     );
   }
+
   return (
     <ProtectedRoute>
       <div className="container mx-auto px-4 py-8">
@@ -865,6 +978,7 @@ export default function ReportsPage() {
                 <TabsTrigger value="charts">Visualizations</TabsTrigger>
               </TabsList>
 
+              {/* ------------------ SUMMARY ------------------ */}
               <TabsContent value="summary">
                 <Card>
                   <CardHeader>
@@ -886,6 +1000,8 @@ export default function ReportsPage() {
                               <TableHead>Student</TableHead>
                               <TableHead>Period</TableHead>
                               <TableHead>Total Exits</TableHead>
+                              {/* NEW: Total Behavior column (Pos + Neg) */}
+                              <TableHead>Total Behavior</TableHead>
                               <TableHead>Total Duration</TableHead>
                               <TableHead>Avg. Duration</TableHead>
                               <TableHead>Destination</TableHead>
@@ -893,26 +1009,32 @@ export default function ReportsPage() {
                           </TableHeader>
 
                           <TableBody>
-                            {summaryData.map((row) => (
-                              <TableRow key={row.studentId}>
-                                <TableCell className="font-medium">
-                                  {row.studentName}
-                                </TableCell>
-                                <TableCell>
-                                  {row.periodName || "No Period"}
-                                </TableCell>
-                                <TableCell>{row.totalExits}</TableCell>
-                                <TableCell>
-                                  {formatDuration(row.totalDuration)}
-                                </TableCell>
-                                <TableCell>
-                                  {formatDuration(row.averageDuration)}
-                                </TableCell>
-                                <TableCell>
-                                  {row.topDestination || "-"}
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                            {summaryData.map((row) => {
+                              const bc = behaviorCounts[row.studentId];
+                              const totalBehavior = bc ? bc.total : 0;
+                              return (
+                                <TableRow key={row.studentId}>
+                                  <TableCell className="font-medium">
+                                    {row.studentName}
+                                  </TableCell>
+                                  <TableCell>
+                                    {row.periodName || "No Period"}
+                                  </TableCell>
+                                  <TableCell>{row.totalExits}</TableCell>
+                                  {/* NEW: show total behavior */}
+                                  <TableCell>{totalBehavior}</TableCell>
+                                  <TableCell>
+                                    {formatDuration(row.totalDuration)}
+                                  </TableCell>
+                                  <TableCell>
+                                    {formatDuration(row.averageDuration)}
+                                  </TableCell>
+                                  <TableCell>
+                                    {row.topDestination || "-"}
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
                           </TableBody>
                         </Table>
                       </div>
@@ -921,6 +1043,7 @@ export default function ReportsPage() {
                 </Card>
               </TabsContent>
 
+              {/* ------------------ DETAILED ------------------ */}
               <TabsContent value="detailed">
                 <Card>
                   <CardHeader>
@@ -940,68 +1063,100 @@ export default function ReportsPage() {
                           <Table className="table-fixed w-full">
                             <TableHeader>
                               <TableRow>
-                                <TableHead className="w-[14.2857%]">
+                                <TableHead rowSpan={2} className="w-[12%]">
                                   Student
                                 </TableHead>
-                                <TableHead className="w-[14.2857%]">
+                                <TableHead rowSpan={2} className="w-[12%]">
                                   Period
                                 </TableHead>
-                                <TableHead className="w-[14.2857%]">
+
+                                {/* Grouped header */}
+                                <TableHead
+                                  colSpan={2}
+                                  className="w-[16%] text-center"
+                                >
+                                  Behavior
+                                </TableHead>
+
+                                <TableHead rowSpan={2} className="w-[14%]">
                                   Destination
                                 </TableHead>
-                                <TableHead className="w-[14.2857%]">
+                                <TableHead rowSpan={2} className="w-[14%]">
                                   Exit Date/Time
                                 </TableHead>
-                                <TableHead className="w-[14.2857%]">
+                                <TableHead rowSpan={2} className="w-[14%]">
                                   Return Date/Time
                                 </TableHead>
-                                <TableHead className="w-[14.2857%]">
+                                <TableHead rowSpan={2} className="w-[10%]">
                                   Duration
                                 </TableHead>
-                                <TableHead className="w-[14.2857%]">
+                                <TableHead rowSpan={2} className="w-[8%]">
                                   Status
+                                </TableHead>
+                              </TableRow>
+
+                              {/* Sub-headers for Behavior */}
+                              <TableRow>
+                                <TableHead className="w-[8%] text-red-600">
+                                  Neg
+                                </TableHead>
+                                <TableHead className="w-[8%] text-green-600">
+                                  Pos
                                 </TableHead>
                               </TableRow>
                             </TableHeader>
 
                             <TableBody>
-                              {currentExits.map((exit) => (
-                                <TableRow key={exit.id}>
-                                  <TableCell className="font-medium">
-                                    {exit.studentName}
-                                  </TableCell>
-                                  <TableCell>
-                                    {exit.periodName || "No Period"}
-                                  </TableCell>
-                                  {/* NEW: show destination value */}
-                                  <TableCell>
-                                    {exit.destination || "-"}
-                                  </TableCell>
-                                  <TableCell>
-                                    {formatDateTime(exit.exitTime)}
-                                  </TableCell>
-                                  <TableCell>
-                                    {formatDateTime(exit.returnTime)}
-                                  </TableCell>
-                                  <TableCell>
-                                    {formatDuration(exit.duration)}
-                                  </TableCell>
-                                  <TableCell>
-                                    <span
-                                      className={cn(
-                                        "px-2 py-1 rounded-full text-xs font-medium",
-                                        exit.status === "out"
-                                          ? "bg-yellow-100 text-yellow-800"
-                                          : "bg-green-100 text-green-800"
-                                      )}
-                                    >
-                                      {exit.status === "out"
-                                        ? "Out"
-                                        : "Returned"}
-                                    </span>
-                                  </TableCell>
-                                </TableRow>
-                              ))}
+                              {currentExits.map((exit) => {
+                                const bc = behaviorCounts[exit.studentId] || {
+                                  pos: 0,
+                                  neg: 0,
+                                  total: 0,
+                                };
+                                return (
+                                  <TableRow key={exit.id}>
+                                    <TableCell className="font-medium">
+                                      {exit.studentName}
+                                    </TableCell>
+                                    <TableCell>
+                                      {exit.periodName || "No Period"}
+                                    </TableCell>
+                                    {/* NEW: Neg / Pos cells */}
+                                    <TableCell className="text-red-600">
+                                      {bc.neg}
+                                    </TableCell>
+                                    <TableCell className="text-green-600">
+                                      {bc.pos}
+                                    </TableCell>
+                                    <TableCell>
+                                      {exit.destination || "-"}
+                                    </TableCell>
+                                    <TableCell>
+                                      {formatDateTime(exit.exitTime)}
+                                    </TableCell>
+                                    <TableCell>
+                                      {formatDateTime(exit.returnTime)}
+                                    </TableCell>
+                                    <TableCell>
+                                      {formatDuration(exit.duration)}
+                                    </TableCell>
+                                    <TableCell>
+                                      <span
+                                        className={cn(
+                                          "px-2 py-1 rounded-full text-xs font-medium",
+                                          exit.status === "out"
+                                            ? "bg-yellow-100 text-yellow-800"
+                                            : "bg-green-100 text-green-800"
+                                        )}
+                                      >
+                                        {exit.status === "out"
+                                          ? "Out"
+                                          : "Returned"}
+                                      </span>
+                                    </TableCell>
+                                  </TableRow>
+                                );
+                              })}
                             </TableBody>
                           </Table>
                         </div>
@@ -1075,6 +1230,7 @@ export default function ReportsPage() {
                 </Card>
               </TabsContent>
 
+              {/* ------------------ CHARTS (unchanged) ------------------ */}
               <TabsContent value="charts">
                 {filteredExits.length === 0 ? (
                   <Card>
@@ -1247,7 +1403,7 @@ export default function ReportsPage() {
                       </CardContent>
                     </Card>
 
-                    {/* NEW: Exits by Destination */}
+                    {/* Exits by Destination */}
                     <Card>
                       <CardHeader>
                         <CardTitle>Exits by Destination</CardTitle>
@@ -1319,6 +1475,78 @@ export default function ReportsPage() {
                               </BarChart>
                             </ResponsiveContainer>
                           </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Top Students by Positive Behavior */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Top Students — Positive Behavior</CardTitle>
+                        <CardDescription>
+                          Positive behavior during the selected period
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="h-[300px] mt-4">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={positiveBehaviorChartData}
+                              margin={{
+                                top: 5,
+                                right: 30,
+                                left: 20,
+                                bottom: 5,
+                              }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="name" />
+                              <YAxis allowDecimals={false} />
+                              <Tooltip />
+                              <Legend />
+                              <Bar
+                                dataKey="value"
+                                name="Number of positive behavior"
+                                fill="#22c55e" // green
+                              />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    {/* Top Students by Negative Behavior */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle>Top Students — Negative Behavior</CardTitle>
+                        <CardDescription>
+                          Negative behavior during the selected period
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="h-[300px] mt-4">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={negativeBehaviorChartData}
+                              margin={{
+                                top: 5,
+                                right: 30,
+                                left: 20,
+                                bottom: 5,
+                              }}
+                            >
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="name" />
+                              <YAxis allowDecimals={false} />
+                              <Tooltip />
+                              <Legend />
+                              <Bar
+                                dataKey="value"
+                                name="Number of negative behavior"
+                                fill="#ef4444" // red
+                              />
+                            </BarChart>
+                          </ResponsiveContainer>
                         </div>
                       </CardContent>
                     </Card>

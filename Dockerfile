@@ -1,10 +1,19 @@
-# -----------------
-# 1) Builder
-# -----------------
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Accept ONLY the public Firebase vars at build time (client bundle)
+# Install build deps first for better caching
+COPY package*.json ./
+# (keep these copies optional to avoid errors if files don't exist)
+COPY pnpm-lock.yaml* ./
+COPY yarn.lock* ./
+
+RUN npm ci --ignore-scripts
+
+# Copy source
+COPY . .
+
+# ---- Public build-time envs (OK to bake) ----
+# Only pass NEXT_PUBLIC_* (never pass secrets here!)
 ARG NEXT_PUBLIC_FIREBASE_API_KEY
 ARG NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
 ARG NEXT_PUBLIC_FIREBASE_PROJECT_ID
@@ -12,8 +21,9 @@ ARG NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
 ARG NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
 ARG NEXT_PUBLIC_FIREBASE_APP_ID
 ARG NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID
+ARG NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_STRIPE_PRICE_ID
 
-# Expose them to the build so Next.js can inline them
 ENV NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY}
 ENV NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
 ENV NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
@@ -21,44 +31,42 @@ ENV NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}
 ENV NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}
 ENV NEXT_PUBLIC_FIREBASE_APP_ID=${NEXT_PUBLIC_FIREBASE_APP_ID}
 ENV NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=${NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID}
+ENV NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+ENV NEXT_PUBLIC_STRIPE_PRICE_ID=${NEXT_PUBLIC_STRIPE_PRICE_ID}
 
-# Deps first for caching
-COPY package*.json ./
-COPY pnpm-lock.yaml* ./
-COPY yarn.lock* ./
-RUN npm install
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 
-# App files
-COPY . .
-
-# Build (pages that import client Firebase should be dynamic on the server)
+# Build
 RUN npm run build
 
-# -----------------
-# 2) Runner
-# -----------------
+# ---------- runner ----------
 FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 
-# Public vars at runtime (useful for client-only fallback code)
-ENV NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY}
-ENV NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
-ENV NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
-ENV NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET}
-ENV NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID}
-ENV NEXT_PUBLIC_FIREBASE_APP_ID=${NEXT_PUBLIC_FIREBASE_APP_ID}
-ENV NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID=${NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID}
-
-# (Do NOT bake Stripe secrets into the image — provide at runtime via compose)
-
-# Minimal runtime files
+# Copy only what's needed to run
 COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/node_modules ./node_modules
+RUN npm ci --omit=dev --ignore-scripts
+
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/next.config.* ./
+
+# Healthcheck (optional)
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 \
+  CMD wget -qO- http://127.0.0.1:3000/ || exit 1
 
 EXPOSE 3000
 CMD ["npm", "start"]
+
+
+
+
+
+
+
+
