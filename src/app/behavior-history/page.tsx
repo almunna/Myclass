@@ -3,7 +3,14 @@ export const dynamic = "force-dynamic";
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { collection, getDocs, query, where } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  deleteDoc,
+  doc,
+} from "firebase/firestore";
 import { db } from "@/firebase/firebase";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,8 +21,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Trash } from "lucide-react";
 
-// --------- unchanged lists ----------
+// NEW: dialog imports
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
+
 const DEFAULT_BEHAVIORS = [
   "Caring",
   "Disrespectful",
@@ -38,17 +56,16 @@ const DEFAULT_ACTIONS = [
 
 type BehaviorRow = {
   id: string;
-  date?: string; // "yyyy-mm-dd"
-  time?: string; // "HH:mm"
+  date?: string;
+  time?: string;
   isPositive?: boolean;
   behaviors?: string[];
   notes?: string;
   actions?: string[];
-  createdAt?: any; // Firestore Timestamp
+  createdAt?: any;
 };
 
 function toSortableDate(r: BehaviorRow): Date {
-  // 🔧 Parse as LOCAL TIME to avoid UTC/local mismatches during filtering
   if (r?.date) {
     const [y, m, d] = r.date.split("-").map(Number);
     const [hh, mi] = (r.time ?? "00:00").split(":").map(Number);
@@ -75,7 +92,6 @@ function displayDate(r: BehaviorRow): { dateText: string; timeText?: string } {
   return { dateText: "-" };
 }
 
-// ---------- Suspense wrapper page (NEW) ----------
 export default function BehaviorHistoryPage() {
   return (
     <Suspense
@@ -86,7 +102,6 @@ export default function BehaviorHistoryPage() {
   );
 }
 
-// ---------- Your original logic moved into a child that runs under Suspense ----------
 function BehaviorHistoryBody() {
   const searchParams = useSearchParams();
   const studentId = searchParams.get("studentId") ?? "";
@@ -95,7 +110,6 @@ function BehaviorHistoryBody() {
   const [rows, setRows] = useState<BehaviorRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
   const [startDate, setStartDate] = useState<string>("");
   const [endDate, setEndDate] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<"all" | "positive" | "negative">(
@@ -104,7 +118,9 @@ function BehaviorHistoryBody() {
   const [behaviorFilter, setBehaviorFilter] = useState<string>("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
 
-  // Fetch Firestore data
+  // NEW: delete dialog state
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!studentId) return;
     (async () => {
@@ -126,7 +142,6 @@ function BehaviorHistoryBody() {
     })();
   }, [studentId]);
 
-  // Totals
   const positives = useMemo(
     () => rows.filter((r) => r.isPositive).length,
     [rows]
@@ -136,19 +151,17 @@ function BehaviorHistoryBody() {
     [rows]
   );
 
-  // Apply filters
   const filteredRows = useMemo(() => {
     let list = rows.slice();
 
-    // replace the start/end date parsing in filteredRows with this:
     if (startDate) {
       const [y, m, d] = startDate.split("-").map(Number);
-      const s = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0); // local midnight
+      const s = new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0);
       list = list.filter((r) => toSortableDate(r) >= s);
     }
     if (endDate) {
       const [y, m, d] = endDate.split("-").map(Number);
-      const e = new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999); // local end of day
+      const e = new Date(y, (m || 1) - 1, d || 1, 23, 59, 59, 999);
       list = list.filter((r) => toSortableDate(r) <= e);
     }
 
@@ -175,12 +188,10 @@ function BehaviorHistoryBody() {
     return list;
   }, [rows, startDate, endDate, typeFilter, behaviorFilter, actionFilter]);
 
-  // Print (opens browser print dialog)
   const handlePrint = () => {
     window.print();
   };
 
-  // Download PDF (no print dialog) — unchanged
   const handleDownloadPDF = async () => {
     const [{ jsPDF }, html2canvas] = await Promise.all([
       import("jspdf"),
@@ -201,14 +212,12 @@ function BehaviorHistoryBody() {
         const win = doc.defaultView!;
         doc.querySelectorAll<HTMLElement>("*").forEach((el) => {
           const cs = win.getComputedStyle(el);
-
           const maybeFix = (prop: string, fallback: string) => {
             const val = cs.getPropertyValue(prop);
             if (val && val.includes("oklch")) {
               el.style.setProperty(prop, fallback, "important");
             }
           };
-
           maybeFix("color", "#111111");
           maybeFix("background-color", "#ffffff");
           maybeFix("border-color", "#e5e7eb");
@@ -217,7 +226,6 @@ function BehaviorHistoryBody() {
           maybeFix("border-bottom-color", "#e5e7eb");
           maybeFix("border-left-color", "#e5e7eb");
           maybeFix("outline-color", "#e5e7eb");
-
           el.style.setProperty("box-shadow", "none", "important");
           el.style.setProperty("text-shadow", "none", "important");
         });
@@ -248,9 +256,21 @@ function BehaviorHistoryBody() {
     pdf.save(`behavior-history_${safeName}.pdf`);
   };
 
+  // NEW: confirm + delete
+  const confirmDelete = async () => {
+    if (!deleteId) return;
+    try {
+      await deleteDoc(doc(db, "behaviors", deleteId));
+      setRows((prev) => prev.filter((r) => r.id !== deleteId));
+      setDeleteId(null);
+    } catch (e) {
+      console.error("Failed to delete behavior:", e);
+      alert("Failed to delete. Please try again.");
+    }
+  };
+
   return (
     <main className="container mx-auto px-4 py-8">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">Behavior History — {studentName}</h1>
         <div className="flex gap-2">
@@ -263,7 +283,6 @@ function BehaviorHistoryBody() {
         </div>
       </div>
 
-      {/* Filters */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end mb-4">
         <div>
           <div className="text-sm font-medium mb-1">Start date</div>
@@ -344,7 +363,6 @@ function BehaviorHistoryBody() {
         </div>
       </div>
 
-      {/* Table */}
       <div className="border rounded-lg overflow-hidden">
         <Table>
           <TableHeader>
@@ -354,19 +372,20 @@ function BehaviorHistoryBody() {
               <TableHead className="w-[22%]">Behavior</TableHead>
               <TableHead className="w-[36%]">Notes</TableHead>
               <TableHead className="w-[20%]">Action taken</TableHead>
+              <TableHead className="w-[6%] text-right">Delete</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
-                <TableCell colSpan={5} className="py-6 text-center">
+                <TableCell colSpan={6} className="py-6 text-center">
                   Loading…
                 </TableCell>
               </TableRow>
             ) : filteredRows.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="text-center text-muted-foreground py-6"
                 >
                   No behavior records match your filters.
@@ -411,6 +430,19 @@ function BehaviorHistoryBody() {
                         ? r.actions.join("\n")
                         : "-"}
                     </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-600 hover:text-red-700"
+                        onClick={() => setDeleteId(r.id)}
+                        aria-label="Delete entry"
+                        title="Delete entry"
+                      >
+                        <Trash className="h-4 w-4" />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 );
               })
@@ -419,7 +451,6 @@ function BehaviorHistoryBody() {
         </Table>
       </div>
 
-      {/* Footer actions: Print + Download PDF */}
       <div className="flex justify-end mt-4 gap-2">
         <Button variant="outline" onClick={handlePrint}>
           Print
@@ -428,6 +459,30 @@ function BehaviorHistoryBody() {
           Download PDF
         </Button>
       </div>
+
+      {/* NEW: Delete confirm modal */}
+      <Dialog
+        open={!!deleteId}
+        onOpenChange={(open) => !open && setDeleteId(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete Behavior</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this behavior entry? This action
+              cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-end">
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button variant="destructive" onClick={confirmDelete}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
