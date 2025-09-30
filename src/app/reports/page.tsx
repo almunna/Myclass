@@ -54,6 +54,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { useSubscriptionAccess } from "@/hooks/useSubscriptionAccess";
 import { NoAccess } from "@/components/NoAccess";
+import Link from "next/link";
 
 interface Student {
   id: string;
@@ -97,7 +98,12 @@ interface SummaryData {
 }
 
 /** NEW: behavior counts per student (within selected date range) */
-type BehaviorCount = { pos: number; neg: number; total: number };
+type BehaviorCount = {
+  pos: number;
+  neg: number;
+  total: number;
+  latestMs?: number;
+};
 
 interface ChartData {
   name: string;
@@ -115,9 +121,9 @@ export default function ReportsPage() {
   const [filteredExits, setFilteredExits] = useState<RoomExit[]>([]);
   const [summaryData, setSummaryData] = useState<SummaryData[]>([]);
 
-  /** NEW: behavior counts map keyed by studentId */
+  /** NEW: behavior counts map keyed by canonical student doc ID */
   const [behaviorCounts, setBehaviorCounts] = useState<
-    Record<string, { pos: number; neg: number; total: number }>
+    Record<string, BehaviorCount>
   >({});
 
   // Pagination state
@@ -309,54 +315,59 @@ export default function ReportsPage() {
     }
   };
 
-  // Build behavior counts for the students shown in Summary (date range aware)
-  // Build behavior counts for the students shown in Summary (date range aware)
-  // Also supports behavior docs that use either `studentId` or `studentDocId`
+  /**
+   * Build behavior counts for relevant students (date-range aware).
+   * Index by canonical student doc ID. Supports behavior docs with studentId or studentDocId.
+   */
   useEffect(() => {
     const fetchBehaviorCounts = async () => {
-      // who do we need counts for?
-      const idsFromSummary = summaryData
-        .map((s) => s.studentId)
-        .filter(Boolean);
-
-      if (idsFromSummary.length === 0) {
+      if (students.length === 0) {
         setBehaviorCounts({});
         return;
       }
 
-      // some projects store custom student codes; map both possibilities
-      const studentById = new Map(students.map((s) => [s.id, s]));
-      const candidateIds = new Set<string>(idsFromSummary);
-      for (const sid of idsFromSummary) {
-        const st = studentById.get(sid);
-        if (st?.studentId) candidateIds.add(st.studentId); // add custom ID too
-      }
+      // Apply selectedStudent filter to the candidate list
+      const eligibleStudents =
+        selectedStudentId === "all"
+          ? students
+          : students.filter((s) => s.id === selectedStudentId);
 
-      // helper to chunk 'in' queries (max 10)
+      // Build lookup maps for id and custom code
+      const byId = new Map(eligibleStudents.map((s) => [s.id, s]));
+      const byCustom = new Map(eligibleStudents.map((s) => [s.studentId, s]));
+
+      // Candidate keys we will accept from behavior documents
+      const candidateKeys = new Set<string>([
+        ...eligibleStudents.map((s) => s.id),
+        ...eligibleStudents.map((s) => s.studentId),
+      ]);
+
+      // Helper to chunk arrays for "in" queries
       const chunk = <T,>(arr: T[], size: number) =>
         Array.from({ length: Math.ceil(arr.length / size) }, (_, i) =>
           arr.slice(i * size, i * size + size)
         );
 
-      const idBatches = chunk(Array.from(candidateIds), 10);
+      const idBatches = chunk(Array.from(candidateKeys), 10);
 
-      // only apply date filtering when BOTH dates are selected
       const hasDateFilter = !!(startDate && endDate);
       const start =
         hasDateFilter && new Date(new Date(startDate!).setHours(0, 0, 0, 0));
       const end =
         hasDateFilter && new Date(new Date(endDate!).setHours(23, 59, 59, 999));
 
-      const counts: Record<
-        string,
-        { pos: number; neg: number; total: number }
-      > = {};
-
-      // We’ll try both possible field names used in behavior docs
+      const counts: Record<string, BehaviorCount> = {};
       const possibleKeys: Array<"studentId" | "studentDocId"> = [
         "studentId",
         "studentDocId",
       ];
+
+      // helper to build LOCAL date from yyyy-mm-dd + HH:mm
+      const toLocalDate = (dateStr: string, timeStr?: string) => {
+        const [y, m, d] = dateStr.split("-").map(Number);
+        const [hh, mi] = (timeStr ?? "00:00").split(":").map(Number);
+        return new Date(y, (m || 1) - 1, d || 1, hh || 0, mi || 0, 0, 0);
+      };
 
       for (const key of possibleKeys) {
         for (const batch of idBatches) {
@@ -369,48 +380,41 @@ export default function ReportsPage() {
 
             snap.docs.forEach((d) => {
               const data: any = d.data();
-              const sidFromDoc: string | undefined =
+              const rawId: string | undefined =
                 data.studentId || data.studentDocId;
-              if (!sidFromDoc) return;
+              if (!rawId || !candidateKeys.has(rawId)) return;
 
-              // normalize to whatever IDs are in candidateIds
-              if (!candidateIds.has(sidFromDoc)) return;
+              // Map behavior doc id/custom-id to canonical student doc ID
+              const student = byId.get(rawId) || byCustom.get(rawId);
+              if (!student) return;
 
-              // build timestamp
+              // Build timestamp (LOCAL)
               let when: Date | null = null;
               if (data.date) {
-                const t = data.time ? `${data.time}:00` : "00:00:00";
-                const dd = new Date(`${data.date}T${t}`);
-                when = isNaN(dd.getTime()) ? null : dd;
+                when = toLocalDate(data.date, data.time);
               } else if (data.createdAt?.toDate) {
                 when = data.createdAt.toDate();
               }
+              const ts = when ? when.getTime() : 0;
 
-              // apply date filter only if both dates are selected and we have a time
               if (hasDateFilter && when) {
                 if (when < (start as Date) || when > (end as Date)) return;
               }
 
-              const isPos = !!data.isPositive;
-              if (!counts[sidFromDoc])
-                counts[sidFromDoc] = { pos: 0, neg: 0, total: 0 };
-              if (isPos) counts[sidFromDoc].pos += 1;
-              else counts[sidFromDoc].neg += 1;
-              counts[sidFromDoc].total =
-                counts[sidFromDoc].pos + counts[sidFromDoc].neg;
+              const keyId = student.id; // canonical
+              if (!counts[keyId])
+                counts[keyId] = { pos: 0, neg: 0, total: 0, latestMs: 0 };
+              if (data.isPositive) counts[keyId].pos += 1;
+              else counts[keyId].neg += 1;
+              counts[keyId].total = counts[keyId].pos + counts[keyId].neg;
+              counts[keyId].latestMs = Math.max(
+                counts[keyId].latestMs ?? 0,
+                ts
+              );
             });
-          } catch (e) {
-            // ignore if this field name doesn't exist in your schema; we'll try the other one
-            // console.warn(`Behavior query failed on key ${key}:`, e);
+          } catch {
+            // ignore and try the other key
           }
-        }
-      }
-
-      // If we counted against custom IDs, also mirror to the doc IDs used in summary rows
-      for (const row of summaryData) {
-        const st = studentById.get(row.studentId);
-        if (st?.studentId && counts[st.studentId] && !counts[row.studentId]) {
-          counts[row.studentId] = counts[st.studentId];
         }
       }
 
@@ -418,17 +422,21 @@ export default function ReportsPage() {
     };
 
     fetchBehaviorCounts();
-    // rerun when the visible students change, date filter changes, or students list changes
-  }, [summaryData, startDate, endDate, students, db]);
+    // re-run when filters or students change
+  }, [students, selectedStudentId, startDate, endDate]);
 
-  // Apply filters and update data
+  // Apply filters and update data (now also include behavior-only students)
   useEffect(() => {
-    if (!roomExits.length) return;
+    if (!roomExits.length && Object.keys(behaviorCounts).length === 0) {
+      setFilteredExits([]);
+      setSummaryData([]);
+      return;
+    }
 
-    // Apply filters
+    // Apply filters to exits
     let filtered = [...roomExits];
 
-    // Date range filter
+    // Date range filter (local)
     if (startDate && endDate) {
       const startTimestamp = new Date(startDate);
       startTimestamp.setHours(0, 0, 0, 0);
@@ -470,6 +478,56 @@ export default function ReportsPage() {
       );
     }
 
+    // ---- Add synthetic rows for behavior-only students (so they show in Detailed) ----
+    const present = new Set(filtered.map((e) => e.studentId));
+    const eligibleStudents =
+      selectedStudentId === "all"
+        ? students
+        : students.filter((s) => s.id === selectedStudentId);
+
+    for (const s of eligibleStudents) {
+      const bc = behaviorCounts[s.id];
+      if (bc && bc.total > 0 && !present.has(s.id)) {
+        filtered.push({
+          id: `behavior-only-${s.id}`,
+          studentId: s.id,
+          studentName: s.name,
+          periodId: null,
+          periodName: null,
+          exitTime: null,
+          returnTime: null,
+          duration: null,
+          status: "returned",
+          destination: null,
+        });
+      }
+    }
+
+    // Sort by latest action (exit OR behavior)
+    filtered.sort((a, b) => {
+      const aExitMs = a.exitTime?.toDate
+        ? a.exitTime.toDate().getTime()
+        : a.exitTime
+        ? new Date(a.exitTime).getTime()
+        : 0;
+      const bExitMs = b.exitTime?.toDate
+        ? b.exitTime.toDate().getTime()
+        : b.exitTime
+        ? new Date(b.exitTime).getTime()
+        : 0;
+
+      const aLatest = Math.max(
+        aExitMs,
+        behaviorCounts[a.studentId]?.latestMs ?? 0
+      );
+      const bLatest = Math.max(
+        bExitMs,
+        behaviorCounts[b.studentId]?.latestMs ?? 0
+      );
+
+      return bLatest - aLatest;
+    });
+
     setFilteredExits(filtered);
     setCurrentPage(1);
 
@@ -484,13 +542,15 @@ export default function ReportsPage() {
     selectedStudentId,
     periods,
     schoolYears,
+    behaviorCounts, // NEW: recompute when behavior counts change
+    students, // so added synthetic rows reflect new students list
   ]);
 
-  // Generate summary data from filtered exits
   const generateSummaryData = (filteredExits: RoomExit[]) => {
     const studentMap = new Map<string, SummaryData>();
     const destMap = new Map<string, Map<string, number>>();
 
+    // --- Build from exits only ---
     filteredExits.forEach((exit) => {
       const key = exit.studentId;
 
@@ -505,26 +565,45 @@ export default function ReportsPage() {
           topDestination: null,
         });
       }
+
       const record = studentMap.get(key)!;
-      record.totalExits++;
+      // ✅ Only count real exits, not behavior-only synthetic rows
+      if (exit.exitTime) {
+        record.totalExits += 1;
+        if (exit.status === "returned" && exit.duration !== null) {
+          record.totalDuration += exit.duration;
+        }
 
-      if (exit.status === "returned" && exit.duration !== null) {
-        record.totalDuration += exit.duration;
+        const dest = (exit.destination || "Unknown") as string;
+        if (!destMap.has(key)) destMap.set(key, new Map());
+        const m = destMap.get(key)!;
+        m.set(dest, (m.get(dest) || 0) + 1);
       }
-
-      const dest = (exit.destination || "Unknown") as string;
-      if (!destMap.has(key)) destMap.set(key, new Map());
-      const m = destMap.get(key)!;
-      m.set(dest, (m.get(dest) || 0) + 1);
     });
 
+    // --- Add behavior-only students (no exits) ---
+    Object.keys(behaviorCounts).forEach((sid) => {
+      if (!studentMap.has(sid)) {
+        const st = students.find((s) => s.id === sid || s.studentId === sid);
+        studentMap.set(sid, {
+          studentId: sid,
+          studentName: st?.name || "Unknown",
+          periodName: st?.periodName || "No Period",
+          totalExits: 0, // ✅ force 0
+          totalDuration: 0,
+          averageDuration: 0,
+          topDestination: null,
+        });
+      }
+    });
+
+    // --- Post-process averages + destinations ---
     const summaryArray = Array.from(studentMap.values()).map((record) => {
       if (record.totalExits > 0 && record.totalDuration > 0) {
         record.averageDuration = Math.round(
           record.totalDuration / record.totalExits
         );
       }
-
       const m = destMap.get(record.studentId);
       if (m && m.size > 0) {
         let top: string | null = null;
@@ -536,14 +615,35 @@ export default function ReportsPage() {
           }
         });
         record.topDestination = top;
-      } else {
-        record.topDestination = null;
       }
-
       return record;
     });
 
-    summaryArray.sort((a, b) => a.studentName.localeCompare(b.studentName));
+    // 🔥 Sort summary by latest action (exit or behavior)
+    const latestExitMsByStudent = new Map<string, number>();
+    filteredExits.forEach((exit) => {
+      const ms = exit.exitTime?.toDate
+        ? exit.exitTime.toDate().getTime()
+        : exit.exitTime
+        ? new Date(exit.exitTime).getTime()
+        : 0;
+      if (ms > (latestExitMsByStudent.get(exit.studentId) || 0)) {
+        latestExitMsByStudent.set(exit.studentId, ms);
+      }
+    });
+
+    summaryArray.sort((a, b) => {
+      const aLatest = Math.max(
+        latestExitMsByStudent.get(a.studentId) || 0,
+        behaviorCounts[a.studentId]?.latestMs ?? 0
+      );
+      const bLatest = Math.max(
+        latestExitMsByStudent.get(b.studentId) || 0,
+        behaviorCounts[b.studentId]?.latestMs ?? 0
+      );
+      return bLatest - aLatest || a.studentName.localeCompare(b.studentName);
+    });
+
     setSummaryData(summaryArray);
   };
 
@@ -551,8 +651,10 @@ export default function ReportsPage() {
   const generateChartData = (filteredExits: RoomExit[]) => {
     const studentExitsMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
-      const count = studentExitsMap.get(exit.studentName) || 0;
-      studentExitsMap.set(exit.studentName, count + 1);
+      if (exit.exitTime) {
+        const count = studentExitsMap.get(exit.studentName) || 0;
+        studentExitsMap.set(exit.studentName, count + 1);
+      }
     });
 
     let studentChartData = Array.from(studentExitsMap.entries())
@@ -563,6 +665,7 @@ export default function ReportsPage() {
 
     const periodExitsMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
+      if (!exit.exitTime) return; // ignore behavior-only rows for exit charts
       const periodName = exit.periodName || "No Period";
       const count = periodExitsMap.get(periodName) || 0;
       periodExitsMap.set(periodName, count + 1);
@@ -575,6 +678,7 @@ export default function ReportsPage() {
     const timeMap = new Map<number, number>();
     for (let i = 0; i < 24; i++) timeMap.set(i, 0);
     filteredExits.forEach((exit) => {
+      if (!exit.exitTime) return; // ignore behavior-only
       const date = exit.exitTime?.toDate
         ? exit.exitTime.toDate()
         : new Date(exit.exitTime);
@@ -593,6 +697,7 @@ export default function ReportsPage() {
     const dayMap = new Map<number, number>();
     for (let i = 0; i < 7; i++) dayMap.set(i, 0);
     filteredExits.forEach((exit) => {
+      if (!exit.exitTime) return; // ignore behavior-only
       const date = exit.exitTime?.toDate
         ? exit.exitTime.toDate()
         : new Date(exit.exitTime);
@@ -619,6 +724,7 @@ export default function ReportsPage() {
 
     const studentDurationMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
+      if (!exit.exitTime) return; // ignore behavior-only
       if (exit.status === "returned" && exit.duration !== null) {
         studentDurationMap.set(
           exit.studentName,
@@ -634,19 +740,18 @@ export default function ReportsPage() {
 
     const destMap = new Map<string, number>();
     filteredExits.forEach((exit) => {
+      if (!exit.exitTime) return; // ignore behavior-only
       let dest = (exit.destination ?? "Unknown").toString().trim();
       if (!dest) dest = "Unknown";
 
-      // Normalize special cases
       if (dest.toLowerCase() === "dean's" || dest.toLowerCase() === "deans") {
-        dest = "Dean's"; // ✅ force correct spelling
+        dest = "Dean's";
       } else if (
         dest.toLowerCase() === "frontoffice" ||
         dest === "frontOffice"
       ) {
-        dest = "Front Office"; // ✅ add space + capitalization
+        dest = "Front Office";
       } else {
-        // Generic: lowercase then capitalize first letter
         dest = dest.toLowerCase();
         dest = dest.charAt(0).toUpperCase() + dest.slice(1);
       }
@@ -663,7 +768,7 @@ export default function ReportsPage() {
 
   const formatDateTime = (timestamp: any) => {
     if (!timestamp) return "-";
-    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleString([], {
       month: "numeric",
       day: "numeric",
@@ -683,7 +788,25 @@ export default function ReportsPage() {
       if (value === null || value === undefined) return "";
       return typeof value === "string"
         ? `"${value.replace(/"/g, '""')}"`
-        : value;
+        : String(value);
+    };
+
+    // use same normalization as the table UI
+    const normalizeDestination = (destRaw: any) => {
+      let dest = (destRaw ?? "Unknown").toString().trim();
+      if (!dest) dest = "Unknown";
+
+      if (dest.toLowerCase() === "dean's" || dest.toLowerCase() === "deans") {
+        return "Dean's";
+      } else if (
+        dest.toLowerCase() === "frontoffice" ||
+        dest === "frontOffice"
+      ) {
+        return "Front Office";
+      } else {
+        dest = dest.toLowerCase();
+        return dest.charAt(0).toUpperCase() + dest.slice(1);
+      }
     };
 
     try {
@@ -691,42 +814,73 @@ export default function ReportsPage() {
       let filename = "";
 
       if (activeTab === "summary") {
-        // NOTE: CSV columns unchanged per your request.
+        // EXACT columns in the Summary table
         csvContent =
-          "Student Name,Period,Total Exits,Total Duration (min),Average Duration (min),Top Destination\n";
+          "Student,Total Exits,Total Behavior,Total Duration,Avg. Duration\n";
+
         summaryData.forEach((row) => {
+          // ✅ Resolve to canonical doc ID so behaviorCounts lookup works
+          const studentObj =
+            students.find(
+              (s) => s.id === row.studentId || s.studentId === row.studentId
+            ) || null;
+          const canonicalId = studentObj?.id ?? row.studentId;
+
+          const bc = behaviorCounts[canonicalId] ?? { total: 0 };
+          const totalBehavior = bc.total || 0;
+
           csvContent +=
             [
               escapeCSV(row.studentName),
-              escapeCSV(row.periodName || "No Period"),
               escapeCSV(row.totalExits),
-              escapeCSV(row.totalDuration),
-              escapeCSV(row.averageDuration),
-              escapeCSV(row.topDestination || "-"),
+              escapeCSV(totalBehavior),
+              escapeCSV(formatDuration(row.totalDuration)),
+              escapeCSV(formatDuration(row.averageDuration)),
             ].join(",") + "\n";
         });
+
         filename = "summary-report.csv";
-      } else {
+      } else if (activeTab === "detailed") {
+        // EXACT columns in the Detailed table (current page only)
         csvContent =
-          "Student Name,Period,Destination,Exit Date/Time,Return Date/Time,Duration (min),Status\n";
-        filteredExits.forEach((exit) => {
+          "Student,Period,Neg,Pos,Destination,Exit Date/Time,Return Date/Time,Duration,Status\n";
+
+        currentExits.forEach((exit) => {
+          const bc = behaviorCounts[exit.studentId] || {
+            pos: 0,
+            neg: 0,
+            total: 0,
+          };
+
           csvContent +=
             [
               escapeCSV(exit.studentName),
               escapeCSV(exit.periodName || "No Period"),
-              escapeCSV(exit.destination || "-"),
+              escapeCSV(bc.neg),
+              escapeCSV(bc.pos),
+              escapeCSV(
+                exit.destination ? normalizeDestination(exit.destination) : "-"
+              ),
               escapeCSV(formatDateTime(exit.exitTime)),
               escapeCSV(formatDateTime(exit.returnTime)),
-              escapeCSV(exit.duration),
-              escapeCSV(exit.status),
+              escapeCSV(formatDuration(exit.duration)),
+              escapeCSV(
+                exit.exitTime
+                  ? exit.status === "out"
+                    ? "Out"
+                    : "Returned"
+                  : "—"
+              ),
             ].join(",") + "\n";
         });
+
         filename = "detailed-report.csv";
+      } else {
+        // Nothing to export on Charts tab
+        return;
       }
 
-      const blob = new Blob([csvContent], {
-        type: "text/csv;charset=utf-8;",
-      });
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.setAttribute("href", url);
@@ -756,12 +910,24 @@ export default function ReportsPage() {
     setCurrentPage((prev) => Math.min(prev + 1, totalPages));
   const prevPage = () => setCurrentPage((prev) => Math.max(prev - 1, 1));
 
+  // ⬇️ Add this loading guard BEFORE the access check
+  if (subscriptionLoading) {
+    return (
+      <ProtectedRoute>
+        <div className="flex justify-center items-center h-screen">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
+  // ⬇️ Keep the access check AFTER the loading guard
   if (!hasAccess) {
     return (
       <ProtectedRoute>
         <NoAccess
-          title="Students Management"
-          description="Access to student management requires an active subscription."
+          title="Student Reports"
+          description="Access to reports requires an active subscription."
         />
       </ProtectedRoute>
     );
@@ -998,39 +1164,65 @@ export default function ReportsPage() {
                           <TableHeader>
                             <TableRow>
                               <TableHead>Student</TableHead>
-                              <TableHead>Period</TableHead>
                               <TableHead>Total Exits</TableHead>
                               {/* NEW: Total Behavior column (Pos + Neg) */}
                               <TableHead>Total Behavior</TableHead>
                               <TableHead>Total Duration</TableHead>
                               <TableHead>Avg. Duration</TableHead>
-                              <TableHead>Destination</TableHead>
                             </TableRow>
                           </TableHeader>
 
                           <TableBody>
                             {summaryData.map((row) => {
-                              const bc = behaviorCounts[row.studentId];
-                              const totalBehavior = bc ? bc.total : 0;
+                              const bc = behaviorCounts[row.studentId] ?? {
+                                total: 0,
+                              };
+                              const totalBehavior = bc.total || 0;
+
+                              // 🔧 Prefer custom code (student.studentId) over doc id for the link
+                              const studentObj =
+                                students.find(
+                                  (s) =>
+                                    s.id === row.studentId ||
+                                    s.studentId === row.studentId
+                                ) || null;
+                              const linkId =
+                                studentObj?.studentId ?? row.studentId; // <-- use custom code if present
+                              const linkName =
+                                studentObj?.name ?? row.studentName;
+
+                              const href = `/behavior-history?studentId=${encodeURIComponent(
+                                linkId
+                              )}&studentName=${encodeURIComponent(linkName)}`;
+
                               return (
                                 <TableRow key={row.studentId}>
                                   <TableCell className="font-medium">
                                     {row.studentName}
                                   </TableCell>
-                                  <TableCell>
-                                    {row.periodName || "No Period"}
-                                  </TableCell>
                                   <TableCell>{row.totalExits}</TableCell>
-                                  {/* NEW: show total behavior */}
-                                  <TableCell>{totalBehavior}</TableCell>
+
+                                  {/* NEW: clickable when > 0 */}
+                                  <TableCell>
+                                    {totalBehavior > 0 ? (
+                                      <Link
+                                        href={href}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary hover:text-blue-600 transition-colors"
+                                      >
+                                        {totalBehavior}
+                                      </Link>
+                                    ) : (
+                                      totalBehavior
+                                    )}
+                                  </TableCell>
+
                                   <TableCell>
                                     {formatDuration(row.totalDuration)}
                                   </TableCell>
                                   <TableCell>
                                     {formatDuration(row.averageDuration)}
-                                  </TableCell>
-                                  <TableCell>
-                                    {row.topDestination || "-"}
                                   </TableCell>
                                 </TableRow>
                               );
@@ -1113,6 +1305,22 @@ export default function ReportsPage() {
                                   neg: 0,
                                   total: 0,
                                 };
+
+                                // 🔧 Resolve correct student link id/name
+                                const studentObj =
+                                  students.find(
+                                    (s) =>
+                                      s.id === exit.studentId ||
+                                      s.studentId === exit.studentId
+                                  ) || null;
+                                const linkId =
+                                  studentObj?.studentId ?? exit.studentId;
+                                const linkName =
+                                  studentObj?.name ?? exit.studentName;
+                                const href = `/behavior-history?studentId=${encodeURIComponent(
+                                  linkId
+                                )}&studentName=${encodeURIComponent(linkName)}`;
+
                                 return (
                                   <TableRow key={exit.id}>
                                     <TableCell className="font-medium">
@@ -1121,16 +1329,52 @@ export default function ReportsPage() {
                                     <TableCell>
                                       {exit.periodName || "No Period"}
                                     </TableCell>
-                                    {/* NEW: Neg / Pos cells */}
+
+                                    {/* NEW: Neg / Pos cells clickable when >0 */}
                                     <TableCell className="text-red-600">
-                                      {bc.neg}
+                                      {bc.total > 0 ? (
+                                        <Link
+                                          href={href}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="hover:text-red-800 transition-colors"
+                                        >
+                                          {bc.neg}
+                                        </Link>
+                                      ) : (
+                                        bc.neg
+                                      )}
                                     </TableCell>
+
                                     <TableCell className="text-green-600">
-                                      {bc.pos}
+                                      {bc.total > 0 ? (
+                                        <Link
+                                          href={href}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="hover:text-green-800 transition-colors"
+                                        >
+                                          {bc.pos}
+                                        </Link>
+                                      ) : (
+                                        bc.pos
+                                      )}
                                     </TableCell>
+
                                     <TableCell>
-                                      {exit.destination || "-"}
+                                      {exit.destination
+                                        ? exit.destination
+                                            .replace(/^deans$/i, "Dean's")
+                                            .replace(
+                                              /^frontOffice$/i,
+                                              "Front Office"
+                                            )
+                                            .replace(/^\w/, (c) =>
+                                              c.toUpperCase()
+                                            )
+                                        : "-"}
                                     </TableCell>
+
                                     <TableCell>
                                       {formatDateTime(exit.exitTime)}
                                     </TableCell>
@@ -1149,9 +1393,11 @@ export default function ReportsPage() {
                                             : "bg-green-100 text-green-800"
                                         )}
                                       >
-                                        {exit.status === "out"
-                                          ? "Out"
-                                          : "Returned"}
+                                        {exit.exitTime
+                                          ? exit.status === "out"
+                                            ? "Out"
+                                            : "Returned"
+                                          : "—"}
                                       </span>
                                     </TableCell>
                                   </TableRow>
@@ -1507,7 +1753,7 @@ export default function ReportsPage() {
                               <Bar
                                 dataKey="value"
                                 name="Number of positive behavior"
-                                fill="#22c55e" // green
+                                fill="#22c55e"
                               />
                             </BarChart>
                           </ResponsiveContainer>
@@ -1543,7 +1789,7 @@ export default function ReportsPage() {
                               <Bar
                                 dataKey="value"
                                 name="Number of negative behavior"
-                                fill="#ef4444" // red
+                                fill="#ef4444"
                               />
                             </BarChart>
                           </ResponsiveContainer>
