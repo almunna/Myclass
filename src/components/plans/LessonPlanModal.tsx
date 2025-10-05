@@ -1,0 +1,459 @@
+"use client";
+
+import * as React from "react";
+import { format, parseISO } from "date-fns";
+import { Paperclip, Save, Palette } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+/* === Firebase imports for dynamic count === */
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  doc,
+  setDoc,
+} from "firebase/firestore";
+import { db, storage } from "@/firebase/firebase";
+import { ref as storageRef, getDownloadURL } from "firebase/storage";
+
+/* ===========================
+   Field key union (for per-field colors)
+   =========================== */
+type PlanField =
+  | "topic"
+  | "objective"
+  | "resources"
+  | "assignments"
+  | "homework"
+  | "notes"
+  | "standards";
+
+/* ===========================
+   Shared components
+   =========================== */
+
+function AutoGrowTextarea({
+  value,
+  onChange,
+  placeholder,
+  className = "",
+  style,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const ref = React.useRef<HTMLTextAreaElement | null>(null);
+
+  const autosize = React.useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = el.scrollHeight + "px";
+  }, []);
+
+  React.useEffect(() => {
+    autosize();
+  }, [value, autosize]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      rows={1}
+      className={cn(
+        "w-full resize-none overflow-hidden align-top rounded border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+        className
+      )}
+      onInput={autosize}
+      style={style}
+    />
+  );
+}
+
+function EditableRow({
+  label,
+  value,
+  setValue,
+  color,
+  setColor,
+}: {
+  label: string;
+  value: string;
+  setValue: (v: string) => void;
+  color?: string;
+  setColor: (c: string) => void;
+}) {
+  const [editing, setEditing] = React.useState(false);
+
+  return (
+    <div className="leading-6 flex items-start gap-2">
+      <span className="font-semibold shrink-0">{label}:</span>
+      {!editing ? (
+        <button
+          type="button"
+          className="flex-1 text-left rounded hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[1.75rem] p-0.5"
+          onClick={() => setEditing(true)}
+          title={`Click to add/edit ${label.toLowerCase()}`}
+        >
+          {value?.trim() ? (
+            <span
+              className="whitespace-pre-wrap"
+              style={{ color: color || undefined }}
+            >
+              {value}
+            </span>
+          ) : (
+            <span className="block w-full border-b border-dotted border-muted-foreground/50 h-[1.25rem]" />
+          )}
+        </button>
+      ) : (
+        <div className="mt-1 w-full">
+          <div className="flex items-center gap-2">
+            <AutoGrowTextarea
+              value={value}
+              onChange={(v) => setValue(v)}
+              placeholder={`Enter ${label.toLowerCase()}…`}
+              style={{ color: color || undefined }}
+            />
+            <div className="flex items-center gap-2">
+              <Label className="text-xs flex items-center gap-1">
+                <Palette className="h-3.5 w-3.5" />
+                Text color
+              </Label>
+              <Input
+                type="color"
+                value={color || "#000000"}
+                onChange={(e) => setColor(e.target.value)}
+                className="h-8 w-10 p-1"
+              />
+            </div>
+          </div>
+
+          <div className="mt-1 flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setEditing(false)}
+            >
+              Done
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setValue("");
+                setEditing(false);
+              }}
+            >
+              Clear
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===========================
+   Types
+   =========================== */
+
+export type PeriodLite = {
+  id: string;
+  name: string;
+  grade?: string;
+  startTime?: string;
+  endTime?: string;
+  studentCount?: number;
+  colorBg?: string;
+  colorText?: string;
+};
+
+export type Attachment = {
+  name: string;
+  type: string;
+  size: number;
+  storagePath: string;
+  url: string;
+};
+
+export type LessonPlan = {
+  id?: string;
+  teacherId: string;
+  schoolYearId: string;
+  periodId: string;
+  date: string;
+  startTime?: string;
+  endTime?: string;
+  topic?: string;
+  objective?: string;
+  resources?: string;
+  assignments?: string;
+  homework?: string;
+  notes?: string;
+  standards?: string;
+  attachments?: Attachment[];
+  colorBg?: string;
+  colorText?: string;
+  fieldColors?: Partial<Record<PlanField, string>>;
+  meta?: {
+    createdAt?: any;
+    updatedAt?: any;
+    shiftedFromDate?: string;
+  };
+};
+
+type Props = {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  plan: LessonPlan | null;
+  period: PeriodLite | null;
+  onChangePlan: React.Dispatch<React.SetStateAction<LessonPlan | null>>;
+  onSave: () => Promise<void> | void;
+  onUploadAttachment: (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => Promise<void> | void;
+  onDeleteAttachment: (att: Attachment) => Promise<void> | void;
+  saving?: boolean;
+};
+
+/* ===========================
+   Modal
+   =========================== */
+
+export function LessonPlanModal({
+  open,
+  onOpenChange,
+  plan,
+  period,
+  onChangePlan,
+  onSave,
+  onUploadAttachment,
+  onDeleteAttachment,
+  saving,
+}: Props) {
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  if (!plan) {
+    return (
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New Plan</DialogTitle>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  const headerBg = plan.colorBg || period?.colorBg || "#0c5a6a";
+  const headerText = plan.colorText || period?.colorText || "#ffffff";
+
+  const safeSet = (patch: Partial<LessonPlan>) =>
+    onChangePlan((prev) => (prev ? { ...prev, ...patch } : prev));
+
+  const setFieldColor = (key: PlanField, color: string) =>
+    safeSet({
+      fieldColors: {
+        ...(plan.fieldColors || {}),
+        [key]: color,
+      },
+    });
+
+  const [studentCount, setStudentCount] = React.useState<number | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function loadCount() {
+      if (!period?.id || !plan?.teacherId) {
+        setStudentCount(null);
+        return;
+      }
+      try {
+        const q = query(
+          collection(db, "students"),
+          where("teacherId", "==", plan.teacherId)
+        );
+        const snap = await getDocs(q);
+        let count = 0;
+        snap.forEach((doc) => {
+          const data = doc.data() as any;
+          const arr: Array<{ id: string }> = Array.isArray(data.periods)
+            ? data.periods
+            : data.periodId
+            ? [{ id: data.periodId }]
+            : [];
+          if (arr.some((p) => p.id === period.id)) count++;
+        });
+        if (!cancelled) setStudentCount(count);
+      } catch {
+        if (!cancelled) setStudentCount(null);
+      }
+    }
+    loadCount();
+    return () => {
+      cancelled = true;
+    };
+  }, [period?.id, plan?.teacherId]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto p-0 rounded border border-border bg-background text-foreground">
+        <DialogHeader className="sr-only">
+          <DialogTitle>
+            {period?.name
+              ? `${period.name} – ${format(
+                  parseISO(plan.date),
+                  "EEE, MMM d, yyyy"
+                )}`
+              : "Lesson Plan"}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div
+          className="px-4 py-2"
+          style={{ background: headerBg, color: headerText }}
+        >
+          <div className="flex items-center justify-between gap-3 w-full">
+            <div className="flex flex-col min-w-[160px]">
+              <div className="text-[15px] font-semibold truncate">
+                {period?.name || "Class Period"}
+              </div>
+              <div className="text-sm opacity-90">{period?.grade || ""}</div>
+            </div>
+            <div className="flex-1 text-center text-[15px] font-medium">
+              Total Students: {studentCount ?? period?.studentCount ?? 0}
+            </div>
+            <div className="text-[15px] font-medium min-w-[140px] text-right">
+              {(() => {
+                const start = period?.startTime ?? plan.startTime;
+                const end = period?.endTime ?? plan.endTime;
+                return start || end
+                  ? `${start ?? ""}${end ? ` – ${end}` : ""}`
+                  : "";
+              })()}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-3 m-3 border rounded-sm bg-card text-card-foreground border-border">
+          <div className="text-[15px] space-y-1">
+            <EditableRow
+              label="Topic"
+              value={plan.topic ?? ""}
+              setValue={(v) => safeSet({ topic: v })}
+              color={plan.fieldColors?.topic}
+              setColor={(c) => setFieldColor("topic", c)}
+            />
+            <EditableRow
+              label="Objective"
+              value={plan.objective ?? ""}
+              setValue={(v) => safeSet({ objective: v })}
+              color={plan.fieldColors?.objective}
+              setColor={(c) => setFieldColor("objective", c)}
+            />
+            <EditableRow
+              label="Resources"
+              value={plan.resources ?? ""}
+              setValue={(v) => safeSet({ resources: v })}
+              color={plan.fieldColors?.resources}
+              setColor={(c) => setFieldColor("resources", c)}
+            />
+            <EditableRow
+              label="Assignments"
+              value={plan.assignments ?? ""}
+              setValue={(v) => safeSet({ assignments: v })}
+              color={plan.fieldColors?.assignments}
+              setColor={(c) => setFieldColor("assignments", c)}
+            />
+            <EditableRow
+              label="Homework"
+              value={plan.homework ?? ""}
+              setValue={(v) => safeSet({ homework: v })}
+              color={plan.fieldColors?.homework}
+              setColor={(c) => setFieldColor("homework", c)}
+            />
+            <EditableRow
+              label="Notes"
+              value={plan.notes ?? ""}
+              setValue={(v) => safeSet({ notes: v })}
+              color={plan.fieldColors?.notes}
+              setColor={(c) => setFieldColor("notes", c)}
+            />
+            <EditableRow
+              label="Standards"
+              value={plan.standards ?? ""}
+              setValue={(v) => safeSet({ standards: v })}
+              color={plan.fieldColors?.standards}
+              setColor={(c) => setFieldColor("standards", c)}
+            />
+          </div>
+        </div>
+
+        <div className="px-4 pb-3">
+          <div className="mb-3">
+            <Label className="mb-1 block">Add Attachment</Label>
+            <Input
+              ref={fileInputRef}
+              type="file"
+              onChange={async (e) => {
+                await onUploadAttachment(e);
+
+                if (fileInputRef.current) fileInputRef.current.value = "";
+              }}
+            />
+
+            {!!plan.attachments?.length && (
+              <div className="mt-2 flex flex-col gap-1">
+                {plan.attachments!.map((a) => (
+                  <a
+                    key={a.storagePath}
+                    href={a.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 underline text-primary hover:text-primary/80"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                    <span className="truncate">{a.name}</span>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter className="px-4 pb-4 flex items-center justify-between gap-3">
+          <div className="text-sm text-muted-foreground">
+            {format(parseISO(plan.date), "EEEE, MMM d, yyyy")}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button onClick={onSave} disabled={!!saving}>
+              <Save className="h-4 w-4 mr-2" /> Save
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

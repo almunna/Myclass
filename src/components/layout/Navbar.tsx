@@ -19,7 +19,9 @@ import {
   GraduationCap,
   LayoutGrid,
   Check,
+  CalendarDays, // ✅ added
 } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import BrandImage from "../../../public/MyClassLog.jpg";
 
@@ -60,6 +62,7 @@ export function Navbar() {
     { name: "Periods", href: "/periods", icon: <BookOpen size={18} /> },
     { name: "Students", href: "/students", icon: <Users size={18} /> },
     { name: "Attendance", href: "/attendance", icon: <Check size={18} /> },
+    { name: "Plans", href: "/plans", icon: <CalendarDays size={18} /> }, // ✅ added
     { name: "Tracking", href: "/tracking", icon: <Clock size={18} /> },
     { name: "Reports", href: "/reports", icon: <BarChart size={18} /> },
     {
@@ -104,7 +107,7 @@ export function Navbar() {
       }`}
     >
       <div className="container mx-auto px-4">
-        <div className="flex items-center justify-between h-24">
+        <div className="flex flex-wrap items-center justify-between gap-3 py-2 md:py-4 min-h-[80px]">
           {/* Logo */}
           <div className="flex items-center">
             <Link
@@ -126,7 +129,7 @@ export function Navbar() {
           </div>
 
           {/* Desktop Navigation (now lg and up) */}
-          <nav className="hidden lg:flex space-x-6">
+          <nav className="hidden lg:flex flex-1 items-center gap-4 xl:gap-6 min-w-0 overflow-x-auto">
             {currentUser ? (
               <>
                 {navLinks.map((link) => (
@@ -191,7 +194,7 @@ export function Navbar() {
           </nav>
 
           {/* Auth Buttons or User Menu (now lg and up) */}
-          <div className="hidden lg:flex items-center gap-1">
+          <div className="hidden lg:flex items-center gap-2 flex-shrink-0">
             {currentUser ? (
               <>
                 <span className="text-sm font-bold">{getFirstName()}</span>
