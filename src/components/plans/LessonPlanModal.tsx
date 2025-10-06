@@ -143,28 +143,9 @@ function EditableRow({
                 value={color || "#000000"}
                 onChange={(e) => setColor(e.target.value)}
                 className="h-8 w-10 p-1"
+                onBlur={() => setEditing(false)}
               />
             </div>
-          </div>
-
-          <div className="mt-1 flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setEditing(false)}
-            >
-              Done
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setValue("");
-                setEditing(false);
-              }}
-            >
-              Clear
-            </Button>
           </div>
         </div>
       )}
@@ -264,8 +245,9 @@ export function LessonPlanModal({
     );
   }
 
-  const headerBg = plan.colorBg || period?.colorBg || "#0c5a6a";
-  const headerText = plan.colorText || period?.colorText || "#ffffff";
+  // Match Plans page card header colors
+  const headerBg = plan.colorBg ?? period?.colorBg ?? "#e6f0ff";
+  const headerText = plan.colorText ?? period?.colorText ?? "#1e3a8a";
 
   const safeSet = (patch: Partial<LessonPlan>) =>
     onChangePlan((prev) => (prev ? { ...prev, ...patch } : prev));
@@ -280,39 +262,107 @@ export function LessonPlanModal({
 
   const [studentCount, setStudentCount] = React.useState<number | null>(null);
 
+  // --- Resolve missing attachment URLs automatically ---
+  React.useEffect(() => {
+    if (!plan?.attachments?.length) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const updated = await Promise.all(
+          (plan.attachments ?? []).map(async (a) => {
+            if (a?.url) return a;
+            if (!a?.storagePath) return a;
+            try {
+              const url = await getDownloadURL(
+                storageRef(storage, a.storagePath)
+              );
+              return { ...a, url };
+            } catch {
+              return a;
+            }
+          })
+        );
+
+        const changed =
+          JSON.stringify(updated) !== JSON.stringify(plan.attachments);
+        if (!cancelled && changed) {
+          onChangePlan((prev) =>
+            prev ? { ...prev, attachments: updated } : prev
+          );
+        }
+      } catch {
+        /* no-op */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [plan?.attachments, onChangePlan]);
+
+  // --- Robust student count (handles periods: [{id}] | ["id"] | periodId | periodIds) ---
   React.useEffect(() => {
     let cancelled = false;
+
     async function loadCount() {
-      if (!period?.id || !plan?.teacherId) {
-        setStudentCount(null);
-        return;
-      }
+      setStudentCount(0);
+      if (!period?.id || !plan?.teacherId) return;
+
       try {
         const q = query(
           collection(db, "students"),
           where("teacherId", "==", plan.teacherId)
         );
         const snap = await getDocs(q);
+
         let count = 0;
-        snap.forEach((doc) => {
-          const data = doc.data() as any;
-          const arr: Array<{ id: string }> = Array.isArray(data.periods)
-            ? data.periods
-            : data.periodId
-            ? [{ id: data.periodId }]
-            : [];
-          if (arr.some((p) => p.id === period.id)) count++;
+        snap.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+
+          const ids: string[] = (() => {
+            if (Array.isArray(data?.periods)) {
+              if (data.periods.length && typeof data.periods[0] === "object") {
+                return data.periods.map((p: any) => p?.id).filter(Boolean);
+              }
+              return data.periods.filter((x: any) => typeof x === "string");
+            }
+            if (Array.isArray(data?.periodIds)) {
+              return data.periodIds.filter((x: any) => typeof x === "string");
+            }
+            if (typeof data?.periodId === "string") {
+              return [data.periodId];
+            }
+            return [];
+          })();
+
+          if (ids.includes(period.id)) count++;
         });
+
         if (!cancelled) setStudentCount(count);
       } catch {
-        if (!cancelled) setStudentCount(null);
+        if (!cancelled) setStudentCount(0);
       }
     }
+
     loadCount();
     return () => {
       cancelled = true;
     };
   }, [period?.id, plan?.teacherId]);
+
+  const clearAllFields = React.useCallback(() => {
+    safeSet({
+      topic: "",
+      objective: "",
+      resources: "",
+      assignments: "",
+      homework: "",
+      notes: "",
+      standards: "",
+    });
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -416,7 +466,6 @@ export function LessonPlanModal({
               type="file"
               onChange={async (e) => {
                 await onUploadAttachment(e);
-
                 if (fileInputRef.current) fileInputRef.current.value = "";
               }}
             />
@@ -445,6 +494,9 @@ export function LessonPlanModal({
             {format(parseISO(plan.date), "EEEE, MMM d, yyyy")}
           </div>
           <div className="flex gap-2">
+            <Button variant="ghost" onClick={clearAllFields}>
+              Clear All
+            </Button>
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
