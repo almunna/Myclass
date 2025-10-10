@@ -2,50 +2,48 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // List of public routes that don't require authentication
-const publicRoutes = ["/login", "/signup", "/", "/about", "/pricing", "/faq", "/privacy-policy", "/terms-of-service"];
+const publicRoutes = [
+  "/login",
+  "/signup",
+  "/",
+  "/about",
+  "/pricing",
+  "/faq",
+  "/privacy-policy",
+  "/terms-of-service",
+  "/tutorials", // ✅ make Tutorials public
+];
 
 export async function middleware(request: NextRequest) {
-    // Get the path of the request
-    const path = request.nextUrl.pathname;
+  const path = request.nextUrl.pathname;
 
-    // Check if the path is a public route
-    const isPublicRoute = publicRoutes.some(route => path === route || path.startsWith(`${route}/`));
+  // Public routes (allow subpaths too, e.g. /tutorials/lesson-1)
+  const isPublicRoute = publicRoutes.some(
+    (route) => path === route || path.startsWith(`${route}/`)
+  );
 
-    // Get user from cookie
-    const user = request.cookies.get("user")?.value;
+  // Your auth cookie
+  const user = request.cookies.get("user")?.value;
 
-    // If the route is protected and user is not logged in, redirect to login
-    if (!isPublicRoute && !user) {
-        // Create a URL for the login page
-        const loginUrl = new URL("/login", request.url);
+  // If protected and not authed → send to login
+  if (!isPublicRoute && !user) {
+    const loginUrl = new URL("/login", request.url);
+    // keep original path in a redirect param
+    loginUrl.searchParams.set("redirect", path); // ✅ your middleware expects `redirect`
+    return NextResponse.redirect(loginUrl);
+  }
 
-        // Add the current URL as a redirect parameter
-        loginUrl.searchParams.set("redirect", path);
+  // If already authed, block login/signup
+  if ((path === "/login" || path === "/signup") && user) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
+  }
 
-        // Redirect to login
-        return NextResponse.redirect(loginUrl);
-    }
-
-    // If the route is login or signup and user is logged in, redirect to dashboard
-    if ((path === "/login" || path === "/signup") && user) {
-        return NextResponse.redirect(new URL("/dashboard", request.url));
-    }
-
-    // Allow the request to continue
-    return NextResponse.next();
+  return NextResponse.next();
 }
 
-// Configure which routes the middleware should run on
 export const config = {
-    matcher: [
-        /*
-         * Match all request paths except for the ones starting with:
-         * - api (API routes)
-         * - _next/static (static files)
-         * - _next/image (image optimization files)
-         * - favicon.ico (favicon file)
-         * - public folder
-         */
-        '/((?!api|_next/static|_next/image|favicon.ico|public).*)',
-    ],
-} 
+  matcher: [
+    // protect everything EXCEPT these system paths
+    "/((?!api|_next/static|_next/image|favicon.ico|public).*)",
+  ],
+};

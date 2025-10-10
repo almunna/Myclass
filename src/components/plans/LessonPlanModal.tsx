@@ -2,13 +2,24 @@
 
 import * as React from "react";
 import { format, parseISO } from "date-fns";
-import { Paperclip, Save, Palette } from "lucide-react";
+import { Paperclip, Save, Palette, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+
 import {
   Dialog,
   DialogContent,
@@ -464,26 +475,71 @@ export function LessonPlanModal({
             <Input
               ref={fileInputRef}
               type="file"
+              multiple
               onChange={async (e) => {
+                // <-- this passes ALL selected files in one event to your handler
                 await onUploadAttachment(e);
                 if (fileInputRef.current) fileInputRef.current.value = "";
               }}
             />
 
             {!!plan.attachments?.length && (
-              <div className="mt-2 flex flex-col gap-1">
-                {plan.attachments!.map((a) => (
-                  <a
-                    key={a.storagePath}
-                    href={a.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-2 underline text-primary hover:text-primary/80"
-                  >
-                    <Paperclip className="h-4 w-4" />
-                    <span className="truncate">{a.name}</span>
-                  </a>
-                ))}
+              <div className="mt-2">
+                <Label className="mb-1 block text-xs text-muted-foreground">
+                  Attachments
+                </Label>
+                <ul className="divide-y rounded border">
+                  {plan.attachments!.map((a) => (
+                    <li
+                      key={a.storagePath}
+                      className="flex items-center justify-between gap-2 p-2"
+                    >
+                      <a
+                        href={a.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-2 truncate"
+                        title={a.name}
+                      >
+                        <Paperclip className="h-4 w-4 shrink-0" />
+                        <span className="truncate">{a.name}</span>
+                      </a>
+
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            title="Delete attachment"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Delete Attachment?
+                            </AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This will permanently remove{" "}
+                              <strong>{a.name}</strong> from the plan.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => onDeleteAttachment(a)}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>

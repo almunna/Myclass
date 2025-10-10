@@ -384,6 +384,40 @@ export default function LandingPage() {
                 </ul>
               </CardContent>
             </Card>
+            {/* NEW: Smart Planning Made Simple */}
+            <Card className="border-2 hover:border-blue-200 transition-colors">
+              <CardHeader>
+                <div className="h-12 w-12 bg-pink-100 rounded-lg flex items-center justify-center mb-4">
+                  <Calendar className="h-6 w-6 text-pink-600" />
+                </div>
+                <CardTitle>Smart Planning Made Simple</CardTitle>
+                <CardDescription>
+                  Streamline your lesson planning with flexible tools designed
+                  to keep you organized and ahead of schedule. Whether you're
+                  prepping for tomorrow or next semester, this feature makes it
+                  effortless.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm text-gray-600">
+                  <li className="flex items-center">
+                    <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                    Attach PowerPoints, PDFs, Word docs, website links, and more
+                    to enrich your plans
+                  </li>
+                  <li className="flex items-center">
+                    <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                    Shift plans forward or backward to adapt quickly when
+                    schedules change
+                  </li>
+                  <li className="flex items-center">
+                    <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
+                    Copy plans from previous years to save time and maintain
+                    consistency
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
           </div>
         </div>
       </section>

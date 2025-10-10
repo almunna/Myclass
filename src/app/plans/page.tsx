@@ -1,21 +1,5 @@
 "use client";
 
-/**
- * app/plans/page.tsx — Lesson Plan Calendar (Manual Plans)
- * - No dynamic periods. Add plans manually per date.
- * - Each plan has: name, time (start/end), header bg/text color.
- * - "+" on each date opens a quick create modal.
- * - Click a plan card to open full LessonPlanModal editor.
- * - Right-click menu: Edit, Copy, Paste, Bump Forward/Backward (per plan OR per day)
- *
- * ✅ Enhancements (thin additions):
- * - Periods: load real periods per school year; choose on quick create/edit.
- * - Per-period colors; plan can override.
- * - Cascade shift: optionally shift this plan + all future plans of the same period.
- * - Print filter: choose one or multiple periods to include in print.
- * - Copy entire year: copy a prior year’s one period into the current year aligned to start date (Mon–Fri only).
- */
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDays,
@@ -176,7 +160,7 @@ type UserPrefs = {
 };
 
 // ---------------- Helpers ----------------
-const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"];
 const iso = (d: Date) => format(d, "yyyy-MM-dd");
 const onlyMF = (d: Date) => {
   const w = d.getDay(); // 0 Sun ... 6 Sat
@@ -215,12 +199,17 @@ function QuickPlanModal({
   // edit mode support
   editPlan,
   onUpdate,
-  // NEW: live preview hook (null clears)
+  // live preview
   onPreviewColors,
-  // NEW: thin period selection support
+  // period props
   periods,
   selectedPeriodId,
   onChangePeriodId,
+
+  // NEW: mode controls from parent (used only when creating)
+  isEventMode,
+  onRequestEvent,
+  onRequestPlan,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -244,12 +233,26 @@ function QuickPlanModal({
   periods: Period[];
   selectedPeriodId: string | null;
   onChangePeriodId: (v: string | null) => void;
+
+  // NEW
+  isEventMode: boolean;
+  onRequestEvent?: () => void;
+  onRequestPlan?: () => void;
 }) {
   const [name, setName] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [colorBg, setColorBg] = useState("#e6f0ff");
   const [colorText, setColorText] = useState("#1e3a8a");
+
+  // 🔎 Detect what we're editing (plan vs event)
+  const isEditing = !!editPlan;
+  const isEditingEvent = !!editPlan && !editPlan.periodId; // periodId === "" => Event
+  const isEditingPlan = !!editPlan && !!editPlan.periodId; // periodId set   => Plan
+
+  // UI visibility rules
+  const showPeriodDropdown = !isEventMode && !isEditingEvent; // hide for events (new or editing event)
+  const showTimeInputs = isEventMode || isEditingEvent; // only for events (new or editing event)
 
   useEffect(() => {
     if (open) {
@@ -263,21 +266,29 @@ function QuickPlanModal({
           colorBg: editPlan.colorBg,
           colorText: editPlan.colorText,
         });
-        onChangePeriodId(editPlan.periodId || null);
+
+        // When editing: force the right selection for period
+        if (isEditingEvent) {
+          onChangePeriodId(null); // Event: no period
+        } else {
+          onChangePeriodId(editPlan.periodId || periods[0]?.id || null);
+        }
       } else {
+        // Creating: reset
         setName("");
         setStartTime("");
         setEndTime("");
         setColorBg("");
         setColorText("");
-        onChangePeriodId(periods[0]?.id || null);
+        // In Plan mode, preselect first period; in Event mode, no period
+        onChangePeriodId(null);
         onPreviewColors?.(null);
       }
     } else {
       onPreviewColors?.(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, editPlan]);
+  }, [open, editPlan, isEventMode]);
 
   const periodColorHint = useMemo(() => {
     const p = periods.find((x) => x.id === selectedPeriodId);
@@ -293,8 +304,33 @@ function QuickPlanModal({
       }}
     >
       <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{editPlan ? "Edit Plan" : "New Plan"}</DialogTitle>
+        <DialogHeader className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <DialogTitle>
+              {isEditing ? (isEditingEvent ? "Edit Event" : "Edit Plan") : null}
+            </DialogTitle>
+
+            {/* Mode toggle buttons only when creating (not editing) */}
+            {!isEditing && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant={isEventMode ? "outline" : "default"}
+                  size="sm"
+                  onClick={() => onRequestPlan?.()}
+                >
+                  New Plan
+                </Button>
+                <Button
+                  variant={isEventMode ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => onRequestEvent?.()}
+                >
+                  New Event
+                </Button>
+              </div>
+            )}
+          </div>
+
           <DialogDescription>
             {initialDate
               ? format(parseISO(initialDate), "EEEE, MMM d, yyyy")
@@ -303,56 +339,67 @@ function QuickPlanModal({
         </DialogHeader>
 
         <div className="space-y-3">
-          {/* Period select */}
-          <div className="space-y-1">
-            <Label>Class Period</Label>
-            <Select
-              value={selectedPeriodId || ""}
-              onValueChange={(v) => onChangePeriodId(v || null)}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select period (optional)" />
-              </SelectTrigger>
-              <SelectContent>
-                {periods.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                    {typeof p.totalStudents === "number"
-                      ? ` · ${p.totalStudents} students`
-                      : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Period dropdown (hidden for Event) */}
+          {showPeriodDropdown && (
+            <div className="space-y-1">
+              <Label>Class Period</Label>
+              <Select
+                value={selectedPeriodId || ""}
+                onValueChange={(v) => onChangePeriodId(v || null)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select period" />
+                </SelectTrigger>
+                <SelectContent>
+                  {periods.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                      {typeof p.totalStudents === "number"
+                        ? ` · ${p.totalStudents} students`
+                        : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="space-y-1">
-            <Label>Plan Name</Label>
+            <Label>
+              {isEditingEvent || isEventMode ? "Event Name" : "Plan Name"}
+            </Label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Algebra: Linear Equations"
+              placeholder={
+                isEditingEvent || isEventMode
+                  ? "e.g., Assembly / Field Trip"
+                  : "e.g., Algebra: Linear Equations"
+              }
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label>Start Time</Label>
-              <Input
-                type="time"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-              />
+          {/* Time inputs (only for Event) */}
+          {showTimeInputs && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Start Time</Label>
+                <Input
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => setStartTime(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>End Time</Label>
+                <Input
+                  type="time"
+                  value={endTime}
+                  onChange={(e) => setEndTime(e.target.value)}
+                />
+              </div>
             </div>
-            <div className="space-y-1">
-              <Label>End Time</Label>
-              <Input
-                type="time"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-              />
-            </div>
-          </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
@@ -404,7 +451,18 @@ function QuickPlanModal({
           </Button>
           <Button
             onClick={() => {
-              const payload = { name, startTime, endTime, colorBg, colorText };
+              // 🧠 Don’t overwrite hidden fields:
+              // - If time inputs are hidden (Plan), don't include times in payload
+              // - If period dropdown is hidden (Event), parent already handles periodId=""
+              const payloadBase = { name, colorBg, colorText } as Pick<
+                LessonPlan,
+                "name" | "startTime" | "endTime" | "colorBg" | "colorText"
+              >;
+
+              const payload = showTimeInputs
+                ? { ...payloadBase, startTime, endTime }
+                : payloadBase;
+
               if (editPlan && onUpdate) {
                 onUpdate(payload);
               } else {
@@ -415,7 +473,7 @@ function QuickPlanModal({
             }}
             disabled={!name.trim()}
           >
-            <Save className="h-4 w-4 mr-2" /> {editPlan ? "Save" : "Create"}
+            <Save className="h-4 w-4 mr-2" /> {isEditing ? "Save" : "Create"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -614,22 +672,26 @@ function PlansBody() {
     })();
   }, [currentUser, selectedYearId]);
 
-  // Compute range by view
   const { rangeStart, rangeEnd, gridDates } = useMemo(() => {
     if (view === "month") {
       const start = startOfWeek(startOfMonth(cursor), { weekStartsOn: 1 });
       const end = endOfWeek(endOfMonth(cursor), { weekStartsOn: 1 });
       const days: Date[] = [];
       for (let d = start; d <= end; d = addDays(d, 1)) days.push(d);
-      return { rangeStart: start, rangeEnd: end, gridDates: days };
+      // ⬇️ keep only Mon–Fri
+      const weekdaysOnly = days.filter(onlyMF);
+      return { rangeStart: start, rangeEnd: end, gridDates: weekdaysOnly };
     }
     if (view === "week") {
       const start = startOfWeek(cursor, { weekStartsOn: 1 });
       const end = endOfWeek(cursor, { weekStartsOn: 1 });
       const days: Date[] = [];
       for (let d = start; d <= end; d = addDays(d, 1)) days.push(d);
-      return { rangeStart: start, rangeEnd: end, gridDates: days };
+      // ⬇️ keep only Mon–Fri
+      const weekdaysOnly = days.filter(onlyMF);
+      return { rangeStart: start, rangeEnd: end, gridDates: weekdaysOnly };
     }
+    // day view unchanged
     return { rangeStart: cursor, rangeEnd: cursor, gridDates: [cursor] };
   }, [cursor, view]);
 
@@ -691,11 +753,13 @@ function PlansBody() {
     }
     setQuickDate(date);
     setQuickEditPlan(null); // ensure create mode
-    setQuickPeriodId(periods[0]?.id || null);
+    setQuickPeriodId(null); // no default selection → shows "Select period"
+
     setColorPreview(null); // clear any stray preview
     setQuickOpen(true);
   }
 
+  // ---------- Quick create ----------
   async function createQuickPlan(
     payload: Pick<
       LessonPlan,
@@ -704,7 +768,16 @@ function PlansBody() {
   ) {
     if (!currentUser || !selectedYearId || !quickDate) return;
 
+    // Use selected period (required for Plan)
     const chosenPeriodId = quickPeriodId || uid(); // legacy-safe
+    const periodObj = periods.find((p) => p.id === chosenPeriodId);
+
+    // If user didn't set times in the modal, inherit from Period page
+    const resolvedStart =
+      payload.startTime || (periodObj as any)?.startTime || undefined;
+    const resolvedEnd =
+      payload.endTime || (periodObj as any)?.endTime || undefined;
+
     const id = `${currentUser.uid}__${selectedYearId}__${chosenPeriodId}__${quickDate}`;
     const plan: LessonPlan = {
       id,
@@ -713,8 +786,8 @@ function PlansBody() {
       periodId: chosenPeriodId,
       date: quickDate,
       name: payload.name?.trim(),
-      startTime: payload.startTime || undefined,
-      endTime: payload.endTime || undefined,
+      startTime: resolvedStart,
+      endTime: resolvedEnd,
       colorBg: payload.colorBg || undefined,
       colorText: payload.colorText || undefined,
       attachments: [],
@@ -730,6 +803,59 @@ function PlansBody() {
       return next.sort((a, b) => a.date.localeCompare(b.date));
     });
     setQuickOpen(false);
+  }
+
+  async function createQuickEvent(
+    payload: Pick<
+      LessonPlan,
+      "name" | "startTime" | "endTime" | "colorBg" | "colorText"
+    >
+  ) {
+    if (!currentUser || !selectedYearId || !quickDate) return;
+
+    // Event has NO period
+    const chosenPeriodId = ""; // keep empty to indicate "no period"
+    const base = `${currentUser.uid}__${selectedYearId}__${
+      chosenPeriodId || uid()
+    }__${quickDate}`;
+    const id = makeUniqueId(base, plans);
+
+    const plan: LessonPlan = {
+      id,
+      teacherId: currentUser.uid,
+      schoolYearId: selectedYearId,
+      periodId: chosenPeriodId, // ""
+      date: quickDate,
+      name: payload.name?.trim(),
+      startTime: payload.startTime || undefined,
+      endTime: payload.endTime || undefined,
+      colorBg: payload.colorBg || undefined,
+      colorText: payload.colorText || undefined,
+      attachments: [],
+      meta: { createdAt: new Date(), updatedAt: new Date() },
+    };
+
+    await setDoc(doc(db, "lessonPlans", id), clean(plan), { merge: true });
+
+    setPlans((prev) =>
+      [...prev, plan].sort((a, b) => a.date.localeCompare(b.date))
+    );
+    setQuickOpen(false);
+  }
+
+  const [quickIsEvent, setQuickIsEvent] = useState<boolean>(false);
+
+  function openQuickCreateEvent(date: string) {
+    if (!selectedYearId) {
+      toast({ title: "Select a School Year first", variant: "destructive" });
+      return;
+    }
+    setQuickDate(date);
+    setQuickEditPlan(null);
+    setQuickPeriodId(null); // ensure no period chosen
+    setQuickIsEvent(true); // <-- add this state (see next step)
+    setColorPreview(null);
+    setQuickOpen(true);
   }
 
   // Compose the “base” (without any suffix)
@@ -877,91 +1003,127 @@ function PlansBody() {
     );
   }
 
+  // ---------- Full editor (in PlansPage) ----------
+  // ---------- Full editor (in PlansPage) ----------
   async function handleUploadAttachment(
     e: React.ChangeEvent<HTMLInputElement>
   ) {
-    if (!editingPlan) return;
+    if (!editingPlan || !currentUser) return;
 
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files ?? []);
+    if (files.length === 0) return;
 
-    // 1) Upload to Storage
-    // always use the currently signed-in user's UID for the storage path
-    const storagePath = `lessonplan_attachments/${currentUser!.uid}/${format(
-      parseISO(editingPlan.date),
+    // Snapshot values we rely on during async work
+    const planSnap = editingPlan;
+    const userId = currentUser.uid;
+    const dateISO = planSnap.date;
+
+    // Start from the latest we have *right now*
+    const existing = [...(planSnap.attachments ?? [])];
+
+    // Storage base path (yyyy/MM buckets)
+    const basePath = `lessonplan_attachments/${userId}/${format(
+      parseISO(dateISO),
       "yyyy/MM"
-    )}/${crypto.randomUUID()}_${file.name}`;
+    )}`;
 
-    const sref = storageRef(storage, storagePath);
-    await uploadBytes(sref, file);
-    const url = await getDownloadURL(sref);
+    // Upload everything in parallel, produce Attachment objects
+    const uploaded: Attachment[] = await Promise.all(
+      files.map(async (file) => {
+        const storagePath = `${basePath}/${crypto.randomUUID()}_${file.name}`;
+        const sref = storageRef(storage, storagePath);
+        await uploadBytes(sref, file);
+        const url = await getDownloadURL(sref);
+        return {
+          name: file.name,
+          type: file.type || "application/octet-stream",
+          size: file.size,
+          storagePath,
+          url,
+        } as Attachment;
+      })
+    );
 
-    // 2) Build attachment and new array
-    const newAtt: Attachment = {
-      name: file.name,
-      type: file.type || "application/octet-stream",
-      size: file.size,
-      storagePath,
-      url,
-    };
-    const newAttachments = [...(editingPlan.attachments || []), newAtt];
+    // Merge + de-dup by storagePath (defensive)
+    const byPath = new Map<string, Attachment>();
+    for (const a of [...existing, ...uploaded]) byPath.set(a.storagePath, a);
+    const nextAttachments = Array.from(byPath.values());
 
-    // 3) Ensure a document id and persist to Firestore immediately
+    // Ensure we have a document id
     const finalId =
-      editingPlan.id ||
-      `${editingPlan.teacherId}__${editingPlan.schoolYearId}__${
-        editingPlan.periodId || uid()
-      }__${editingPlan.date}`;
+      planSnap.id ||
+      `${planSnap.teacherId}__${planSnap.schoolYearId}__${
+        planSnap.periodId || uid()
+      }__${dateISO}`;
 
+    // Persist once with the *full* new array
     await setDoc(
       doc(db, "lessonPlans", finalId),
       clean({
-        attachments: newAttachments,
+        attachments: nextAttachments,
         meta: {
-          ...(editingPlan.meta || {}),
+          ...(planSnap.meta || {}),
           updatedAt: new Date(),
-          ...(editingPlan.meta?.createdAt ? {} : { createdAt: new Date() }),
+          ...(planSnap.meta?.createdAt ? {} : { createdAt: new Date() }),
         },
       }),
       { merge: true }
     );
 
-    // 4) Reflect in local modal state
-    setEditingPlan((p) =>
-      p
-        ? {
-            ...p,
-            id: finalId, // in case it was new/unsaved
-            attachments: newAttachments,
-            meta: {
-              ...(p.meta || {}),
-              updatedAt: new Date(),
-              ...(p.meta?.createdAt ? {} : { createdAt: new Date() }),
-            },
-          }
-        : p
-    );
+    // Reflect in modal state (functional update to avoid stale merges)
+    setEditingPlan((prev) => {
+      if (!prev) return prev;
+      // merge again in case something else updated between await points
+      const mergeMap = new Map<string, Attachment>();
+      for (const a of [...(prev.attachments ?? []), ...nextAttachments])
+        mergeMap.set(a.storagePath, a);
+      return {
+        ...prev,
+        id: finalId,
+        attachments: Array.from(mergeMap.values()),
+        meta: {
+          ...(prev.meta || {}),
+          updatedAt: new Date(),
+          ...(prev.meta?.createdAt ? {} : { createdAt: new Date() }),
+        },
+      };
+    });
 
-    // 5) Reflect in calendar state so links appear in the grid immediately
-    setPlans((prev) =>
-      prev
-        .map((pl) =>
-          pl.id === finalId
-            ? {
-                ...pl,
-                attachments: newAttachments,
-                meta: {
-                  ...(pl.meta || {}),
-                  updatedAt: new Date(),
-                  ...(pl.meta?.createdAt ? {} : { createdAt: new Date() }),
-                },
-              }
-            : pl
-        )
-        .sort((a, b) => a.date.localeCompare(b.date))
-    );
+    // Reflect in calendar state
+    setPlans((prev) => {
+      const mergeMap = new Map<string, Attachment>();
+      // find current plan in list (if present)
+      const updated = prev.map((pl) => {
+        if (pl.id !== finalId) return pl;
+        for (const a of [...(pl.attachments ?? []), ...nextAttachments])
+          mergeMap.set(a.storagePath, a);
+        return {
+          ...pl,
+          attachments: Array.from(mergeMap.values()),
+          meta: {
+            ...(pl.meta || {}),
+            updatedAt: new Date(),
+            ...(pl.meta?.createdAt ? {} : { createdAt: new Date() }),
+          },
+        };
+      });
+      // If plan wasn’t in prev (new draft), add it
+      if (!updated.some((p) => p.id === finalId)) {
+        updated.push({
+          ...planSnap,
+          id: finalId,
+          attachments: nextAttachments,
+          meta: {
+            ...(planSnap.meta || {}),
+            updatedAt: new Date(),
+            ...(planSnap.meta?.createdAt ? {} : { createdAt: new Date() }),
+          },
+        });
+      }
+      return updated.sort((a, b) => a.date.localeCompare(b.date));
+    });
 
-    // 6) Optional: clear the input so the same file can be reselected
+    // Clear the input so the same files can be selected again
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -1262,18 +1424,21 @@ function PlansBody() {
       return;
     }
 
-    // Compute the target dates starting from targetYear.startDate, M–F only
-    const targetYearNumber = parseISO(targetYear.startDate).getFullYear();
-
+    // Compute the target dates starting from targetYear.startDate
     const batch = writeBatch(db);
     const written: LessonPlan[] = [];
     srcPlans.forEach((src) => {
       // Keep same month/day; change only the year to the target year's
       const targetYearNumber = parseISO(targetYear.startDate).getFullYear();
       const srcDate = parseISO(src.date);
-      const dstDate = iso(
+      let dstDate = iso(
         new Date(targetYearNumber, srcDate.getMonth(), srcDate.getDate())
       );
+
+      // If destination lands on Sat/Sun, push to next business day (Mon–Fri)
+      if (!onlyMF(parseISO(dstDate))) {
+        dstDate = iso(nextBusinessDay(parseISO(dstDate), +1));
+      }
 
       // Ensure unique ids (avoids React key collisions if duplicates land on same day/period)
       const base = `${currentUser.uid}__${selectedYearId}__${
@@ -1660,7 +1825,7 @@ function PlansBody() {
         {/* Grid */}
         <div
           className={cn(
-            "grid grid-cols-7 gap-px bg-border print:bg-transparent"
+            "grid grid-cols-5 gap-px bg-border print:bg-transparent"
           )}
         >
           {/* Weekday header */}
@@ -1742,7 +1907,7 @@ function PlansBody() {
 
               {/* ---- Bump Forward ---- */}
               <div className="px-3 pt-2 pb-1 text-xs text-muted-foreground">
-                Bump Forward
+                Push Forward
                 {!menu.plan && " (all plans on this date)"}
               </div>
               <div className="px-3 pb-2 flex items-center gap-2">
@@ -1794,7 +1959,7 @@ function PlansBody() {
 
               {/* ---- Bump Backward ---- */}
               <div className="px-3 pt-2 pb-1 text-xs text-muted-foreground">
-                Bump Backward
+                Push Backward
                 {!menu.plan && " (all plans on this date)"}
               </div>
               <div className="px-3 pb-2 flex items-center gap-2">
@@ -1865,11 +2030,12 @@ function PlansBody() {
             if (!v) {
               setQuickEditPlan(null);
               setColorPreview(null);
+              setQuickIsEvent(false); // reset mode on close
             }
             setQuickOpen(v);
           }}
           initialDate={quickDate}
-          onCreate={createQuickPlan}
+          onCreate={quickIsEvent ? createQuickEvent : createQuickPlan}
           editPlan={quickEditPlan || undefined}
           onUpdate={updateQuickPlan}
           onPreviewColors={(v) => {
@@ -1879,9 +2045,21 @@ function PlansBody() {
               setColorPreview({ planId: quickEditPlan.id, ...v });
             }
           }}
-          periods={periods}
-          selectedPeriodId={quickPeriodId}
+          // In Event mode, hide period dropdown by giving an empty list + null selection
+          periods={quickIsEvent ? [] : periods}
+          selectedPeriodId={quickIsEvent ? null : quickPeriodId}
           onChangePeriodId={setQuickPeriodId}
+          // NEW: mode wiring
+          isEventMode={quickIsEvent}
+          onRequestEvent={() => {
+            setQuickIsEvent(true);
+            setQuickPeriodId(null); // ensure no period in Event mode
+          }}
+          onRequestPlan={() => {
+            setQuickIsEvent(false);
+            // restore a default period when switching back to Plan mode
+            if (!quickPeriodId && periods[0]) setQuickPeriodId(periods[0].id);
+          }}
         />
 
         {/* Full Editor */}
@@ -2144,9 +2322,9 @@ function PlansBody() {
 // ---------------- Subcomponents ----------------
 function Line({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-start gap-2">
-      <span className="min-w-[88px] font-medium">{label}:</span>
-      <span className="whitespace-pre-wrap">{value}</span>
+    <div className="text-xs leading-snug">
+      <span className="font-medium">{label}:</span>{" "}
+      <span className="whitespace-pre-wrap break-words align-top">{value}</span>
     </div>
   );
 }

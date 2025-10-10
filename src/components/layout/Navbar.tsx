@@ -6,6 +6,17 @@ import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import { LogoutButton } from "@/components/auth/LogoutButton";
 import { useAuth } from "@/hooks/useAuth";
+import DashboardIcon from "./icons/Dashboard.jpeg";
+import PeriodsIcon from "./icons/Periods.jpeg";
+import StudentsIcon from "./icons/Students.jpeg";
+import AttendanceIcon from "./icons/Attendance.jpeg";
+import PlansIcon from "./icons/Plans.jpeg";
+import TrackingIcon from "./icons/Tracking.jpeg";
+import ReportsIcon from "./icons/Reports.png";
+import SeatingIcon from "./icons/Seating.jpeg";
+import TutorialsIcon from "./icons/Tutorials.jpeg";
+import AccountIcon from "./icons/Account.jpeg";
+
 import {
   Menu,
   X,
@@ -58,27 +69,61 @@ export function Navbar() {
 
   // Define nav links
   const navLinks = [
-    { name: "Dashboard", href: "/dashboard", icon: <User size={18} /> },
-    { name: "Periods", href: "/periods", icon: <BookOpen size={18} /> },
-    { name: "Students", href: "/students", icon: <Users size={18} /> },
-    { name: "Attendance", href: "/attendance", icon: <Check size={18} /> },
-    { name: "Plans", href: "/plans", icon: <CalendarDays size={18} /> }, // ✅ added
-    { name: "Tracking", href: "/tracking", icon: <Clock size={18} /> },
-    { name: "Reports", href: "/reports", icon: <BarChart size={18} /> },
     {
-      name: "Seating Chart",
+      name: "Dashboard",
+      href: "/dashboard",
+      icon: (
+        <Image src={DashboardIcon} alt="Dashboard" width={20} height={20} />
+      ),
+    },
+    {
+      name: "Periods",
+      href: "/periods",
+      icon: <Image src={PeriodsIcon} alt="Periods" width={20} height={20} />,
+    },
+    {
+      name: "Students",
+      href: "/students",
+      icon: <Image src={StudentsIcon} alt="Students" width={20} height={20} />,
+    },
+    {
+      name: "Attendance",
+      href: "/attendance",
+      icon: (
+        <Image src={AttendanceIcon} alt="Attendance" width={20} height={20} />
+      ),
+    },
+    {
+      name: "Plans",
+      href: "/plans",
+      icon: <Image src={PlansIcon} alt="Plans" width={20} height={20} />,
+    },
+    {
+      name: "Tracking",
+      href: "/tracking",
+      icon: <Image src={TrackingIcon} alt="Tracking" width={20} height={20} />,
+    },
+    {
+      name: "Reports",
+      href: "/reports",
+      icon: <Image src={ReportsIcon} alt="Reports" width={20} height={20} />,
+    },
+    {
+      name: "Seating",
       href: "/class-layout",
-      icon: <LayoutGrid size={18} />,
+      icon: <Image src={SeatingIcon} alt="Seating" width={20} height={20} />,
     },
     {
       name: "Tutorials",
       href: "/tutorials",
-      icon: <GraduationCap size={18} />,
+      icon: (
+        <Image src={TutorialsIcon} alt="Tutorials" width={20} height={20} />
+      ),
     },
     {
-      name: "Subscription",
-      href: "/subscription",
-      icon: <CreditCard size={18} />,
+      name: "Account",
+      href: "/account",
+      icon: <Image src={AccountIcon} alt="Account" width={20} height={20} />,
     },
   ];
 
@@ -98,6 +143,14 @@ export function Navbar() {
     return "User";
   };
 
+  // If not logged in, only Tutorials should be publicly accessible.
+  // Others redirect to login with redirect=<original href>
+  const effectiveHref = (href: string) => {
+    if (href === "/tutorials") return "/tutorials";
+    if (currentUser) return href;
+    return `/login?redirect=${encodeURIComponent(href)}`; // ✅ changed from returnTo → redirect
+  };
+
   return (
     <header
       className={`fixed top-0 w-full z-40 transition-all duration-200 ${
@@ -109,7 +162,7 @@ export function Navbar() {
       <div className="container mx-auto px-4">
         <div className="flex flex-wrap items-center justify-between gap-3 py-2 md:py-4 min-h-[80px]">
           {/* Logo */}
-          <div className="flex items-center">
+          <div className="flex items-center ml-3">
             <Link
               href="/"
               className="text-xl font-semibold flex items-center gap-2"
@@ -129,68 +182,23 @@ export function Navbar() {
           </div>
 
           {/* Desktop Navigation (now lg and up) */}
-          <nav className="hidden lg:flex flex-1 items-center gap-4 xl:gap-6 min-w-0 overflow-x-auto">
-            {currentUser ? (
-              <>
-                {navLinks.map((link) => (
-                  <Link
-                    key={link.href}
-                    href={link.href}
-                    className={`flex items-center gap-1.5 hover:text-primary transition-colors ${
-                      pathname === link.href
-                        ? "text-primary font-medium"
-                        : "text-muted-foreground"
-                    }`}
-                  >
-                    {link.icon}
-                    {link.name}
-                  </Link>
-                ))}
-              </>
-            ) : (
-              <>
+          <nav className="hidden lg:flex flex-1 items-center justify-center gap-4 xl:gap-6 min-w-0 overflow-x-auto">
+            <>
+              {navLinks.map((link) => (
                 <Link
-                  href="/"
-                  className={`hover:text-primary transition-colors ${
-                    pathname === "/"
+                  key={link.href}
+                  href={effectiveHref(link.href)}
+                  className={`flex items-center gap-1.5 hover:text-primary transition-colors ${
+                    pathname === link.href
                       ? "text-primary font-medium"
                       : "text-muted-foreground"
                   }`}
                 >
-                  Home
+                  {link.icon}
+                  {link.name}
                 </Link>
-                <Link
-                  href="/about"
-                  className={`hover:text-primary transition-colors ${
-                    pathname === "/about"
-                      ? "text-primary font-medium"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  About
-                </Link>
-                <Link
-                  href="/pricing"
-                  className={`hover:text-primary transition-colors ${
-                    pathname === "/pricing"
-                      ? "text-primary font-medium"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  Pricing
-                </Link>
-                <Link
-                  href="/tutorials"
-                  className={`hover:text-primary transition-colors ${
-                    pathname === "/pricing"
-                      ? "text-primary font-medium"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  Tutorials
-                </Link>
-              </>
-            )}
+              ))}
+            </>
           </nav>
 
           {/* Auth Buttons or User Menu (now lg and up) */}
@@ -206,12 +214,21 @@ export function Navbar() {
               </>
             ) : (
               <>
-                <Link href="/login">
+                {/* ✅ pass ?redirect=<current path> */}
+                <Link
+                  href={`/login?redirect=${encodeURIComponent(
+                    pathname || "/"
+                  )}`}
+                >
                   <Button variant="ghost" size="sm">
                     Log in
                   </Button>
                 </Link>
-                <Link href="/signup">
+                <Link
+                  href={`/signup?redirect=${encodeURIComponent(
+                    pathname || "/"
+                  )}`}
+                >
                   <Button size="sm">Sign up</Button>
                 </Link>
               </>
@@ -233,29 +250,33 @@ export function Navbar() {
       {isNavOpen && (
         <nav className="lg:hidden p-4 bg-background border-t">
           <div className="flex flex-col space-y-4">
-            {currentUser ? (
-              <>
+            <>
+              {currentUser && (
                 <div className="pb-2 border-b">
                   <span className="text-sm font-medium text-muted-foreground">
                     Hello, {getFirstName()}
                   </span>
                 </div>
-                {navLinks.map((link) => (
-                  <Link
-                    key={link.href}
-                    href={link.href}
-                    className={`flex items-center gap-2 py-2 ${
-                      pathname === link.href
-                        ? "text-primary font-medium"
-                        : "text-muted-foreground"
-                    }`}
-                    onClick={() => setIsNavOpen(false)}
-                  >
-                    {link.icon}
-                    {link.name}
-                  </Link>
-                ))}
-                <div className="pt-4 border-t">
+              )}
+
+              {navLinks.map((link) => (
+                <Link
+                  key={link.href}
+                  href={effectiveHref(link.href)}
+                  className={`flex items-center gap-2 py-2 ${
+                    pathname === link.href
+                      ? "text-primary font-medium"
+                      : "text-muted-foreground"
+                  }`}
+                  onClick={() => setIsNavOpen(false)}
+                >
+                  {link.icon}
+                  {link.name}
+                </Link>
+              ))}
+
+              <div className="pt-4 border-t">
+                {currentUser ? (
                   <LogoutButton
                     className="w-full justify-center"
                     variant="destructive"
@@ -263,53 +284,34 @@ export function Navbar() {
                   >
                     Sign Out
                   </LogoutButton>
-                </div>
-              </>
-            ) : (
-              <>
-                <Link
-                  href="/"
-                  className="py-2"
-                  onClick={() => setIsNavOpen(false)}
-                >
-                  Home
-                </Link>
-                <Link
-                  href="/about"
-                  className="py-2"
-                  onClick={() => setIsNavOpen(false)}
-                >
-                  About
-                </Link>
-                <Link
-                  href="/pricing"
-                  className="py-2"
-                  onClick={() => setIsNavOpen(false)}
-                >
-                  <Link
-                    href="/tutorials" // ✅ was "/pricing"
-                    className={`hover:text-primary transition-colors ${
-                      pathname === "/tutorials"
-                        ? "text-primary font-medium"
-                        : "text-muted-foreground"
-                    }`}
-                  >
-                    Tutorials
-                  </Link>
-                  Pricing
-                </Link>
-                <div className="flex flex-col gap-2 pt-4 border-t">
-                  <Link href="/login" onClick={() => setIsNavOpen(false)}>
-                    <Button variant="outline" className="w-full justify-center">
-                      Log in
-                    </Button>
-                  </Link>
-                  <Link href="/signup" onClick={() => setIsNavOpen(false)}>
-                    <Button className="w-full justify-center">Sign up</Button>
-                  </Link>
-                </div>
-              </>
-            )}
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {/* ✅ pass ?redirect=<current path> on mobile too */}
+                    <Link
+                      href={`/login?redirect=${encodeURIComponent(
+                        pathname || "/"
+                      )}`}
+                      onClick={() => setIsNavOpen(false)}
+                    >
+                      <Button
+                        variant="outline"
+                        className="w-full justify-center"
+                      >
+                        Log in
+                      </Button>
+                    </Link>
+                    <Link
+                      href={`/signup?redirect=${encodeURIComponent(
+                        pathname || "/"
+                      )}`}
+                      onClick={() => setIsNavOpen(false)}
+                    >
+                      <Button className="w-full justify-center">Sign up</Button>
+                    </Link>
+                  </div>
+                )}
+              </div>
+            </>
           </div>
         </nav>
       )}
