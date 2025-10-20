@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useLayoutEffect,
+} from "react";
 import {
   addDays,
   addMonths,
@@ -29,12 +35,13 @@ import {
   Save,
   Sun,
   Moon,
+  Share2,
 } from "lucide-react";
 
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { useSubscriptionAccess } from "@/hooks/useSubscriptionAccess";
 import { NoAccess } from "@/components/NoAccess";
-
+import Link from "next/link";
 import { db, storage } from "@/firebase/firebase";
 import {
   collection,
@@ -45,6 +52,9 @@ import {
   setDoc,
   where,
   writeBatch,
+  deleteDoc,
+  arrayUnion, // ⬅️ add
+  arrayRemove, // ⬅️ add
 } from "firebase/firestore";
 import {
   ref as storageRef,
@@ -188,6 +198,10 @@ function clean<T>(obj: T): T {
     return x;
   };
   return recur(obj);
+}
+
+function nsDocRef(userId: string, yearId: string) {
+  return doc(db, "nonSchoolDays", `${userId}__${yearId}`);
 }
 
 // ---------------- Quick Plan Modal (Create + Edit with preview) ----------------
@@ -481,6 +495,28 @@ function QuickPlanModal({
   );
 }
 
+// land on a weekday the grid shows; for class plans also avoid non-school days
+function normalizeTargetDate(
+  isoDate: string,
+  dir: 1 | -1,
+  isClassPlan: boolean,
+  isNonSchool: (d: string) => boolean
+) {
+  let d = parseISO(isoDate);
+
+  // If it's weekend, move to next business day in the chosen direction
+  if (!onlyMF(d)) d = nextBusinessDay(d, dir);
+
+  // For class plans (periodId truthy), also skip non-school days
+  if (isClassPlan) {
+    while (isNonSchool(iso(d))) {
+      d = nextBusinessDay(d, dir);
+    }
+  }
+
+  return iso(d);
+}
+
 // ---------------- Page ----------------
 export default function PlansPage() {
   const { currentUser } = useAuth();
@@ -521,6 +557,11 @@ function PlansBody() {
   const [cursor, setCursor] = useState<Date>(startOfDay(new Date()));
   const [view, setView] = useState<"month" | "week" | "day">("month");
 
+  // Delete confirmation
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmPlan, setConfirmPlan] = useState<LessonPlan | null>(null);
+  const [confirmDate, setConfirmDate] = useState<string | null>(null);
+
   // Data
   const [years, setYears] = useState<SchoolYear[]>([]);
   const [selectedYearId, setSelectedYearId] = useState<string>("");
@@ -533,7 +574,27 @@ function PlansBody() {
     return m;
   }, [periods]);
 
-  // live color preview for the plan currently being edited in the quick modal
+  // Non-school days (date strings: "YYYY-MM-DD")
+  const [nonSchoolDays, setNonSchoolDays] = useState<string[]>([]);
+  const isNonSchool = (date: string) => nonSchoolDays.includes(date);
+
+  useEffect(() => {
+    if (!currentUser || !selectedYearId) {
+      setNonSchoolDays([]);
+      return;
+    }
+    (async () => {
+      const ref = nsDocRef(currentUser.uid, selectedYearId);
+      const snap = await getDoc(ref);
+      const days =
+        snap.exists() && Array.isArray(snap.data().dates)
+          ? (snap.data().dates as string[])
+          : [];
+      setNonSchoolDays(days);
+    })();
+  }, [currentUser, selectedYearId]);
+
+  // Live color preview for quick modal editing
   const [colorPreview, setColorPreview] = useState<{
     planId: string;
     colorBg?: string;
@@ -560,35 +621,42 @@ function PlansBody() {
   const [quickDate, setQuickDate] = useState<string | null>(null);
   const [quickEditPlan, setQuickEditPlan] = useState<LessonPlan | null>(null);
   const [quickPeriodId, setQuickPeriodId] = useState<string | null>(null);
+  const [quickIsEvent, setQuickIsEvent] = useState<boolean>(false);
 
   // Clipboard for copy/paste + bump days
   const [clipboard, setClipboard] = useState<{ block: LessonPlan[] } | null>(
     null
   );
 
-  // ⬇️ split into two independent counts
+  // Shift controls
   const [shiftCountForward, setShiftCountForward] = useState<number>(1);
   const [shiftCountBackward, setShiftCountBackward] = useState<number>(1);
-  const [cascadeShift, setCascadeShift] = useState<boolean>(false); // NEW
+  const [cascadeShift, setCascadeShift] = useState<boolean>(false);
 
   // Floating context menu (right-click)
   const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
     date: string;
     plan?: LessonPlan;
+    anchor: DOMRect; // ⬅️ where to anchor
   } | null>(null);
+
+  // add a position state
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({
+    top: 0,
+    left: 0,
+  });
 
   // Print
   const printRef = useRef<HTMLDivElement>(null);
   const [printOpen, setPrintOpen] = useState(false);
-  const [printPeriodFilter, setPrintPeriodFilter] = useState<string[]>([]); // NEW multi-select
+  const [printPeriodFilter, setPrintPeriodFilter] = useState<string[]>([]);
 
   // Copy year dialog
   const [copyDialogOpen, setCopyDialogOpen] = useState(false);
   const [copyFromYearId, setCopyFromYearId] = useState<string>("");
   const [copyFromPeriodId, setCopyFromPeriodId] = useState<string>("");
   const [copyFromYearPeriods, setCopyFromYearPeriods] = useState<Period[]>([]);
+
   // Load prefs
   useEffect(() => {
     if (!currentUser) return;
@@ -603,7 +671,121 @@ function PlansBody() {
       }
     })();
   }, [currentUser]);
+  async function syncPeriodColors(
+    periodId: string,
+    colorBg?: string,
+    colorText?: string
+  ) {
+    if (!currentUser || !selectedYearId || !periodId) return;
 
+    // 1) Update the Period doc’s colors
+    await setDoc(
+      doc(db, "periods", periodId),
+      clean({ colorBg: colorBg || null, colorText: colorText || null }),
+      { merge: true }
+    );
+
+    // 2) Update all LessonPlans for this period in Firestore
+    const qPlans = query(
+      collection(db, "lessonPlans"),
+      where("teacherId", "==", currentUser.uid),
+      where("schoolYearId", "==", selectedYearId),
+      where("periodId", "==", periodId)
+    );
+    const snap = await getDocs(qPlans);
+    const batch = writeBatch(db);
+    const updatedIds: string[] = [];
+
+    snap.forEach((d) => {
+      batch.set(
+        doc(db, "lessonPlans", d.id),
+        clean({
+          colorBg: colorBg || null,
+          colorText: colorText || null,
+          meta: { updatedAt: new Date() },
+        }),
+        { merge: true }
+      );
+      updatedIds.push(d.id);
+    });
+    await batch.commit();
+
+    // 3) Reflect in local state: update the period + every plan of that period
+    setPeriods((prev) =>
+      prev.map((p) => (p.id === periodId ? { ...p, colorBg, colorText } : p))
+    );
+
+    setPlans((prev) =>
+      prev
+        .map((pl) =>
+          pl.periodId === periodId
+            ? {
+                ...pl,
+                colorBg,
+                colorText,
+                meta: { ...(pl.meta || {}), updatedAt: new Date() },
+              }
+            : pl
+        )
+        .sort((a, b) => a.date.localeCompare(b.date))
+    );
+  }
+
+  // Delete a plan
+  async function deletePlan(plan: LessonPlan) {
+    if (!plan?.id) return;
+    try {
+      const atts = plan.attachments ?? [];
+      if (atts.length) {
+        await Promise.all(
+          atts.map((a) =>
+            deleteObject(storageRef(storage, a.storagePath)).catch(() => {})
+          )
+        );
+      }
+      await deleteDoc(doc(db, "lessonPlans", plan.id));
+      setPlans((prev: LessonPlan[]) => prev.filter((p) => p.id !== plan.id));
+      toast({ title: "Plan deleted." });
+    } catch (err) {
+      toast({
+        title: "Failed to delete plan.",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function toggleNonSchoolDay(dateStr: string, checked: boolean) {
+    if (!currentUser || !selectedYearId) return;
+
+    const prev = nonSchoolDays;
+    setNonSchoolDays((p) =>
+      checked
+        ? Array.from(new Set([...p, dateStr]))
+        : p.filter((d) => d !== dateStr)
+    );
+
+    try {
+      await setDoc(
+        nsDocRef(currentUser.uid, selectedYearId),
+        { dates: checked ? arrayUnion(dateStr) : arrayRemove(dateStr) },
+        { merge: true }
+      );
+    } catch (err) {
+      // rollback + notify
+      setNonSchoolDays(prev);
+      toast({
+        title: "Couldn’t update non-school day",
+        description:
+          err instanceof Error
+            ? err.message
+            : "Missing or insufficient permissions.",
+        variant: "destructive",
+      });
+    }
+  }
+
+  // Theme toggle
   const toggleTheme = async () => {
     if (!currentUser) return;
     const next = prefs.theme === "dark" ? "light" : "dark";
@@ -613,6 +795,7 @@ function PlansBody() {
     document.documentElement.classList.toggle("dark", next === "dark");
   };
 
+  // Load copy-from-year periods
   useEffect(() => {
     if (!currentUser || !copyFromYearId) {
       setCopyFromYearPeriods([]);
@@ -672,30 +855,34 @@ function PlansBody() {
     })();
   }, [currentUser, selectedYearId]);
 
+  // Compute visible range
   const { rangeStart, rangeEnd, gridDates } = useMemo(() => {
     if (view === "month") {
       const start = startOfWeek(startOfMonth(cursor), { weekStartsOn: 1 });
       const end = endOfWeek(endOfMonth(cursor), { weekStartsOn: 1 });
       const days: Date[] = [];
       for (let d = start; d <= end; d = addDays(d, 1)) days.push(d);
-      // ⬇️ keep only Mon–Fri
-      const weekdaysOnly = days.filter(onlyMF);
-      return { rangeStart: start, rangeEnd: end, gridDates: weekdaysOnly };
+      return {
+        rangeStart: start,
+        rangeEnd: end,
+        gridDates: days.filter(onlyMF),
+      };
     }
     if (view === "week") {
       const start = startOfWeek(cursor, { weekStartsOn: 1 });
       const end = endOfWeek(cursor, { weekStartsOn: 1 });
       const days: Date[] = [];
       for (let d = start; d <= end; d = addDays(d, 1)) days.push(d);
-      // ⬇️ keep only Mon–Fri
-      const weekdaysOnly = days.filter(onlyMF);
-      return { rangeStart: start, rangeEnd: end, gridDates: weekdaysOnly };
+      return {
+        rangeStart: start,
+        rangeEnd: end,
+        gridDates: days.filter(onlyMF),
+      };
     }
-    // day view unchanged
     return { rangeStart: cursor, rangeEnd: cursor, gridDates: [cursor] };
   }, [cursor, view]);
 
-  // Fetch plans in range (no period filter anymore)
+  // Fetch plans in range
   useEffect(() => {
     if (!currentUser || !selectedYearId) {
       setPlans([]);
@@ -720,7 +907,7 @@ function PlansBody() {
     })();
   }, [currentUser, selectedYearId, rangeStart, rangeEnd]);
 
-  // Plans maps
+  // Group plans by date
   const plansByDate = useMemo(() => {
     const map = new Map<string, LessonPlan[]>();
     for (const p of plans) {
@@ -728,7 +915,6 @@ function PlansBody() {
       arr.push(p);
       map.set(p.date, arr);
     }
-    // keep a predictable per-day order (by startTime then name)
     for (const [k, arr] of map) {
       arr.sort((a, b) => {
         const at = a.startTime || "";
@@ -745,21 +931,46 @@ function PlansBody() {
     return map;
   }, [plans, periodMap]);
 
-  // ---------- Quick create ----------
+  // Quick create entry points
   function openQuickCreate(date: string) {
     if (!selectedYearId) {
       toast({ title: "Select a School Year first", variant: "destructive" });
       return;
     }
     setQuickDate(date);
-    setQuickEditPlan(null); // ensure create mode
-    setQuickPeriodId(null); // no default selection → shows "Select period"
-
-    setColorPreview(null); // clear any stray preview
+    setQuickEditPlan(null);
+    setQuickPeriodId(null);
+    setColorPreview(null);
+    setQuickOpen(true);
+  }
+  function openQuickCreateEvent(date: string) {
+    if (!selectedYearId) {
+      toast({ title: "Select a School Year first", variant: "destructive" });
+      return;
+    }
+    setQuickDate(date);
+    setQuickEditPlan(null);
+    setQuickPeriodId(null);
+    setQuickIsEvent(true);
+    setColorPreview(null);
     setQuickOpen(true);
   }
 
-  // ---------- Quick create ----------
+  // Helpers for ids
+  const baseIdOf = (
+    teacherId: string,
+    schoolYearId: string,
+    periodId: string,
+    date: string
+  ) => `${teacherId}__${schoolYearId}__${periodId}__${date}`;
+  const makeUniqueId = (base: string, existing: Array<{ id?: string }>) => {
+    let candidate = base;
+    let n = 2;
+    const has = (x: string) => existing.some((p) => p.id === x);
+    while (has(candidate)) candidate = `${base}__copy${n++}`;
+    return candidate;
+  };
+
   async function createQuickPlan(
     payload: Pick<
       LessonPlan,
@@ -768,17 +979,35 @@ function PlansBody() {
   ) {
     if (!currentUser || !selectedYearId || !quickDate) return;
 
-    // Use selected period (required for Plan)
-    const chosenPeriodId = quickPeriodId || uid(); // legacy-safe
+    const chosenPeriodId = quickPeriodId || uid();
     const periodObj = periods.find((p) => p.id === chosenPeriodId);
 
-    // If user didn't set times in the modal, inherit from Period page
     const resolvedStart =
       payload.startTime || (periodObj as any)?.startTime || undefined;
     const resolvedEnd =
       payload.endTime || (periodObj as any)?.endTime || undefined;
 
-    const id = `${currentUser.uid}__${selectedYearId}__${chosenPeriodId}__${quickDate}`;
+    // ✅ If user picked colors on create, push them to the period and all its plans
+    if (payload.colorBg || payload.colorText) {
+      await syncPeriodColors(
+        chosenPeriodId,
+        payload.colorBg,
+        payload.colorText
+      );
+    }
+    if (quickDate && isNonSchool(quickDate)) {
+      toast({
+        title: "Non-school day",
+        description: "You can only add events on this date.",
+        variant: "destructive",
+      });
+      setQuickIsEvent(true);
+      return;
+    }
+
+    const base = `${currentUser.uid}__${selectedYearId}__${chosenPeriodId}__${quickDate}`;
+    const id = makeUniqueId(base, plans);
+
     const plan: LessonPlan = {
       id,
       teacherId: currentUser.uid,
@@ -793,18 +1022,15 @@ function PlansBody() {
       attachments: [],
       meta: { createdAt: new Date(), updatedAt: new Date() },
     };
-    await setDoc(doc(db, "lessonPlans", id), clean(plan), { merge: true });
 
-    setPlans((prev) => {
-      const next = prev.filter(
-        (p) => !(p.date === plan.date && p.periodId === plan.periodId)
-      );
-      next.push(plan);
-      return next.sort((a, b) => a.date.localeCompare(b.date));
-    });
+    await setDoc(doc(db, "lessonPlans", id), clean(plan), { merge: true });
+    setPlans((prev) =>
+      [...prev, plan].sort((a, b) => a.date.localeCompare(b.date))
+    );
     setQuickOpen(false);
   }
 
+  // Create event (no period)
   async function createQuickEvent(
     payload: Pick<
       LessonPlan,
@@ -812,19 +1038,16 @@ function PlansBody() {
     >
   ) {
     if (!currentUser || !selectedYearId || !quickDate) return;
-
-    // Event has NO period
-    const chosenPeriodId = ""; // keep empty to indicate "no period"
+    const chosenPeriodId = "";
     const base = `${currentUser.uid}__${selectedYearId}__${
       chosenPeriodId || uid()
     }__${quickDate}`;
     const id = makeUniqueId(base, plans);
-
     const plan: LessonPlan = {
       id,
       teacherId: currentUser.uid,
       schoolYearId: selectedYearId,
-      periodId: chosenPeriodId, // ""
+      periodId: chosenPeriodId,
       date: quickDate,
       name: payload.name?.trim(),
       startTime: payload.startTime || undefined,
@@ -834,54 +1057,14 @@ function PlansBody() {
       attachments: [],
       meta: { createdAt: new Date(), updatedAt: new Date() },
     };
-
     await setDoc(doc(db, "lessonPlans", id), clean(plan), { merge: true });
-
     setPlans((prev) =>
       [...prev, plan].sort((a, b) => a.date.localeCompare(b.date))
     );
     setQuickOpen(false);
   }
 
-  const [quickIsEvent, setQuickIsEvent] = useState<boolean>(false);
-
-  function openQuickCreateEvent(date: string) {
-    if (!selectedYearId) {
-      toast({ title: "Select a School Year first", variant: "destructive" });
-      return;
-    }
-    setQuickDate(date);
-    setQuickEditPlan(null);
-    setQuickPeriodId(null); // ensure no period chosen
-    setQuickIsEvent(true); // <-- add this state (see next step)
-    setColorPreview(null);
-    setQuickOpen(true);
-  }
-
-  // Compose the “base” (without any suffix)
-  const baseIdOf = (
-    teacherId: string,
-    schoolYearId: string,
-    periodId: string,
-    date: string
-  ) => `${teacherId}__${schoolYearId}__${periodId}__${date}`;
-
-  // If an id starts with base, return the trailing suffix, else "".
-  const suffixOf = (id: string, base: string) =>
-    id.startsWith(base) ? id.slice(base.length) : "";
-
-  // Make a unique id by appending __copyN if needed (checks current state array)
-  const makeUniqueId = (base: string, existing: Array<{ id?: string }>) => {
-    let candidate = base;
-    let n = 2;
-    const has = (x: string) => existing.some((p) => p.id === x);
-    while (has(candidate)) {
-      candidate = `${base}__copy${n++}`;
-    }
-    return candidate;
-  };
-
-  // quick edit updater
+  // Quick edit update
   async function updateQuickPlan(
     patch: Pick<
       LessonPlan,
@@ -889,6 +1072,14 @@ function PlansBody() {
     >
   ) {
     if (!quickEditPlan?.id) return;
+
+    // If we have a period (edit mode uses quickPeriodId when present, else keep original),
+    // and color fields are present, push them to the period + all plans in that period.
+    const periodForColors = quickPeriodId ?? quickEditPlan.periodId;
+    if (periodForColors && (patch.colorBg || patch.colorText)) {
+      await syncPeriodColors(periodForColors, patch.colorBg, patch.colorText);
+    }
+
     const finalPatch: Partial<LessonPlan> = {
       ...patch,
       ...(quickPeriodId ? { periodId: quickPeriodId } : {}),
@@ -909,12 +1100,11 @@ function PlansBody() {
     toast({ title: "Updated plan." });
   }
 
-  // ---------- Full editor ----------
+  // Full editor open/save
   function openEditor(plan: LessonPlan) {
     setEditingPlan(plan);
     setEditorOpen(true);
   }
-
   async function savePlan() {
     if (!editingPlan) return;
     try {
@@ -966,8 +1156,15 @@ function PlansBody() {
         },
       };
 
-      const finalId =
-        id || `${teacherId}__${schoolYearId}__${periodId || uid()}__${date}`;
+      // ⬇️ Replace your old `const finalId = ...` with this block
+      let finalId = id;
+      if (!finalId) {
+        const base = `${teacherId}__${schoolYearId}__${
+          periodId || uid()
+        }__${date}`;
+        finalId = makeUniqueId(base, plans); // ensure uniqueness for same period/day
+      }
+
       await setDoc(doc(db, "lessonPlans", finalId), clean(planData), {
         merge: true,
       });
@@ -984,13 +1181,12 @@ function PlansBody() {
     }
   }
 
+  // Attachment delete/upload inside editor
   async function deleteAttachment(att: Attachment) {
     if (!editingPlan) return;
     try {
       await deleteObject(storageRef(storage, att.storagePath));
-    } catch {
-      // ignore
-    }
+    } catch {}
     setEditingPlan((p) =>
       p
         ? {
@@ -1002,32 +1198,23 @@ function PlansBody() {
         : p
     );
   }
-
-  // ---------- Full editor (in PlansPage) ----------
-  // ---------- Full editor (in PlansPage) ----------
   async function handleUploadAttachment(
     e: React.ChangeEvent<HTMLInputElement>
   ) {
     if (!editingPlan || !currentUser) return;
-
     const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
+    if (!files.length) return;
 
-    // Snapshot values we rely on during async work
     const planSnap = editingPlan;
     const userId = currentUser.uid;
     const dateISO = planSnap.date;
-
-    // Start from the latest we have *right now*
     const existing = [...(planSnap.attachments ?? [])];
 
-    // Storage base path (yyyy/MM buckets)
     const basePath = `lessonplan_attachments/${userId}/${format(
       parseISO(dateISO),
       "yyyy/MM"
     )}`;
 
-    // Upload everything in parallel, produce Attachment objects
     const uploaded: Attachment[] = await Promise.all(
       files.map(async (file) => {
         const storagePath = `${basePath}/${crypto.randomUUID()}_${file.name}`;
@@ -1044,19 +1231,16 @@ function PlansBody() {
       })
     );
 
-    // Merge + de-dup by storagePath (defensive)
     const byPath = new Map<string, Attachment>();
     for (const a of [...existing, ...uploaded]) byPath.set(a.storagePath, a);
     const nextAttachments = Array.from(byPath.values());
 
-    // Ensure we have a document id
     const finalId =
       planSnap.id ||
       `${planSnap.teacherId}__${planSnap.schoolYearId}__${
         planSnap.periodId || uid()
       }__${dateISO}`;
 
-    // Persist once with the *full* new array
     await setDoc(
       doc(db, "lessonPlans", finalId),
       clean({
@@ -1070,10 +1254,8 @@ function PlansBody() {
       { merge: true }
     );
 
-    // Reflect in modal state (functional update to avoid stale merges)
     setEditingPlan((prev) => {
       if (!prev) return prev;
-      // merge again in case something else updated between await points
       const mergeMap = new Map<string, Attachment>();
       for (const a of [...(prev.attachments ?? []), ...nextAttachments])
         mergeMap.set(a.storagePath, a);
@@ -1089,10 +1271,8 @@ function PlansBody() {
       };
     });
 
-    // Reflect in calendar state
     setPlans((prev) => {
       const mergeMap = new Map<string, Attachment>();
-      // find current plan in list (if present)
       const updated = prev.map((pl) => {
         if (pl.id !== finalId) return pl;
         for (const a of [...(pl.attachments ?? []), ...nextAttachments])
@@ -1107,7 +1287,6 @@ function PlansBody() {
           },
         };
       });
-      // If plan wasn’t in prev (new draft), add it
       if (!updated.some((p) => p.id === finalId)) {
         updated.push({
           ...planSnap,
@@ -1123,15 +1302,49 @@ function PlansBody() {
       return updated.sort((a, b) => a.date.localeCompare(b.date));
     });
 
-    // Clear the input so the same files can be selected again
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  // ---------- Context menu (copy/paste/bump/cascade) ----------
+  // Context menu helpers
   function onCellContext(e: React.MouseEvent, date: string, plan?: LessonPlan) {
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, date, plan });
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setMenu({ date, plan, anchor: rect });
   }
+  function computeMenuPosition(
+    anchor: DOMRect,
+    menuEl: HTMLDivElement | null,
+    preferred: "top" | "bottom" = "top",
+    gap = 8
+  ) {
+    const mw = menuEl?.offsetWidth ?? 260;
+    const mh = menuEl?.offsetHeight ?? 220;
+
+    // Try above
+    let top = anchor.top - mh - gap;
+    let left = anchor.left; // align left edges
+
+    // Clamp horizontally within viewport
+    left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
+
+    // If not enough room above, place below
+    if (preferred === "top" && top < 8) {
+      top = anchor.bottom + gap;
+      // If also too low, clamp to bottom padding
+      if (top + mh > window.innerHeight - 8) {
+        top = Math.max(8, window.innerHeight - mh - 8);
+      }
+    } else {
+      // If above but still too high, clamp to top padding
+      if (top < 8) top = 8;
+    }
+
+    return { top, left };
+  }
+  useLayoutEffect(() => {
+    if (!menu || !menuRef.current) return;
+    setMenuPos(computeMenuPosition(menu.anchor, menuRef.current, "top", 8));
+  }, [menu]);
 
   function copyBlock(plan?: LessonPlan) {
     if (!plan) {
@@ -1141,19 +1354,13 @@ function PlansBody() {
     setClipboard({ block: [plan] });
     toast({ title: "Copied plan." });
   }
-
-  /** PASTE a copied plan onto a date */
   async function pasteAt(date: string) {
     if (!clipboard?.block?.length || !currentUser || !selectedYearId) return;
-
     const src = clipboard.block[0];
     const newPid = src.periodId || uid();
-
     const base = baseIdOf(currentUser.uid, selectedYearId, newPid, date);
-    const id = makeUniqueId(base, plans); // <- ensure uniqueness
-
+    const id = makeUniqueId(base, plans);
     const { id: _drop, ...rest } = src;
-
     const payload: LessonPlan = {
       ...rest,
       teacherId: currentUser.uid,
@@ -1162,27 +1369,24 @@ function PlansBody() {
       date,
       meta: { createdAt: new Date(), updatedAt: new Date() },
     };
-
     await setDoc(doc(db, "lessonPlans", id), clean(payload), { merge: true });
-
     setPlans((prev) =>
       [...prev, { ...payload, id }].sort((a, b) => a.date.localeCompare(b.date))
     );
-
     toast({ title: "Pasted plan." });
   }
 
-  // Replace the whole shift(...) function with this
+  // Shift / Bump
   async function shift(
     plan: LessonPlan,
     dir: 1 | -1,
     count: number
   ): Promise<LessonPlan[]> {
     if (!currentUser || !selectedYearId || !plan?.id) return [];
-
     const computeShiftedDate = (baseISO: string, step: number) => {
-      const t = addDays(parseISO(baseISO), dir * step); // literal calendar days
-      return iso(t);
+      const candidate = iso(addDays(parseISO(baseISO), dir * step));
+      const isClassPlan = !!plan.periodId; // events have empty periodId
+      return normalizeTargetDate(candidate, dir, isClassPlan, isNonSchool);
     };
 
     const toChange: LessonPlan[] = [];
@@ -1197,14 +1401,10 @@ function PlansBody() {
               isAfter(parseISO(p.date), parseISO(plan.date)))
         )
         .sort((a, b) => a.date.localeCompare(b.date));
-
-      for (const p of samePeriodPlans) {
-        const newDate = computeShiftedDate(p.date, count);
-        toChange.push({ ...p, date: newDate });
-      }
+      for (const p of samePeriodPlans)
+        toChange.push({ ...p, date: computeShiftedDate(p.date, count) });
     } else {
-      const newDate = computeShiftedDate(plan.date, count);
-      toChange.push({ ...plan, date: newDate });
+      toChange.push({ ...plan, date: computeShiftedDate(plan.date, count) });
     }
 
     const batch = writeBatch(db);
@@ -1217,7 +1417,6 @@ function PlansBody() {
         p.date
       );
       const dstId = makeUniqueId(base, plans);
-
       const dstRef = doc(db, "lessonPlans", dstId);
       const srcRef = p.id ? doc(db, "lessonPlans", p.id) : null;
 
@@ -1253,7 +1452,6 @@ function PlansBody() {
     return changed;
   }
 
-  /** BUMP every plan on a given date by N business days (unchanged) */
   async function bumpDate(date: string, dir: 1 | -1, count: number) {
     if (!currentUser || !selectedYearId) return;
     const items = (plansByDate.get(date) || []).filter((p) => !!p.id);
@@ -1269,9 +1467,13 @@ function PlansBody() {
     const changed: LessonPlan[] = [];
 
     for (const plan of items) {
-      // compute new target date (skip weekends)
-      const target = addDays(parseISO(plan.date), dir * count);
-      const newDate = iso(target);
+      const candidate = iso(addDays(parseISO(plan.date), dir * count));
+      const newDate = normalizeTargetDate(
+        candidate,
+        dir,
+        !!plan.periodId, // class plans skip non-school days; events just skip weekends so they remain visible
+        isNonSchool
+      );
 
       const base = baseIdOf(
         currentUser.uid,
@@ -1280,10 +1482,8 @@ function PlansBody() {
         newDate
       );
       const dstId = makeUniqueId(base, plans);
-
       const dstRef = doc(db, "lessonPlans", dstId);
       const srcRef = doc(db, "lessonPlans", plan.id!);
-
       const { id: _omit, ...rest } = plan;
 
       const payload: LessonPlan = {
@@ -1303,7 +1503,6 @@ function PlansBody() {
 
     await batch.commit();
 
-    // reflect in UI
     setPlans((prev) => {
       const keep = prev.filter((p) => p.date !== date);
       const next = [...keep, ...changed];
@@ -1317,9 +1516,9 @@ function PlansBody() {
     });
   }
 
-  // Always give the modal a stable, non-null plan object
-  const planSafe: LessonPlan = useMemo(() => {
-    return (
+  // Safe defaults for modals
+  const planSafe: LessonPlan = useMemo(
+    () =>
       editingPlan ?? {
         id: "__draft__",
         teacherId: currentUser?.uid ?? "",
@@ -1328,17 +1527,14 @@ function PlansBody() {
         date: iso(cursor),
         attachments: [],
         meta: {},
-      }
-    );
-  }, [editingPlan, currentUser, selectedYearId, cursor]);
+      },
+    [editingPlan, currentUser, selectedYearId, cursor]
+  );
 
-  // Always give the modal a stable period shape (even if not found)
   const periodForModal = useMemo(() => {
     const pid = editingPlan?.periodId ?? "";
     const p = periods.find((x) => x.id === pid);
-    if (!p) {
-      return { id: "", name: "Class Period", studentCount: 0 };
-    }
+    if (!p) return { id: "", name: "Class Period", studentCount: 0 };
     const raw =
       (p as any).totalStudents ??
       (p as any).studentCount ??
@@ -1357,35 +1553,25 @@ function PlansBody() {
     };
   }, [periods, editingPlan?.periodId]);
 
-  // close floating menu only when the event is *outside* the menu
+  // Close floating menu when clicking elsewhere
   useEffect(() => {
     if (!menu) return;
-
     const isInsideMenu = (target: EventTarget | null) =>
       target instanceof Node &&
       !!menuRef.current &&
       menuRef.current.contains(target);
-
     const onDocClick = (e: MouseEvent) => {
-      if (isInsideMenu(e.target)) return;
-      setMenu(null);
+      if (!isInsideMenu(e.target)) setMenu(null);
     };
-
     const onDocContextMenu = (e: MouseEvent) => {
-      if (isInsideMenu(e.target)) return;
-      setMenu(null);
+      if (!isInsideMenu(e.target)) setMenu(null);
     };
-
     const onScroll = (e: Event) => {
-      if (isInsideMenu(e.target)) return;
-      setMenu(null);
+      if (!isInsideMenu(e.target)) setMenu(null);
     };
-
-    // use capture phase so we run early, but still respect inside checks
     document.addEventListener("click", onDocClick, true);
     document.addEventListener("contextmenu", onDocContextMenu, true);
     window.addEventListener("scroll", onScroll, true);
-
     return () => {
       document.removeEventListener("click", onDocClick, true);
       document.removeEventListener("contextmenu", onDocContextMenu, true);
@@ -1393,7 +1579,7 @@ function PlansBody() {
     };
   }, [menu]);
 
-  // ---------- Year copy (period → new year M–F alignment) ----------
+  // Copy year
   async function copyPeriodFromYearToCurrent() {
     if (!currentUser || !selectedYearId || !copyFromYearId || !copyFromPeriodId)
       return;
@@ -1407,7 +1593,6 @@ function PlansBody() {
       return;
     }
 
-    // Load all plans for source year + chosen period
     const qSrc = query(
       collection(db, "lessonPlans"),
       where("teacherId", "==", currentUser.uid),
@@ -1418,59 +1603,45 @@ function PlansBody() {
     let srcPlans: LessonPlan[] = [];
     srcSnap.forEach((d) => srcPlans.push({ id: d.id, ...(d.data() as any) }));
     srcPlans.sort((a, b) => a.date.localeCompare(b.date));
-
     if (!srcPlans.length) {
       toast({ title: "No plans found for that period in the chosen year." });
       return;
     }
 
-    // Compute the target dates starting from targetYear.startDate
     const batch = writeBatch(db);
     const written: LessonPlan[] = [];
     srcPlans.forEach((src) => {
-      // Keep same month/day; change only the year to the target year's
       const targetYearNumber = parseISO(targetYear.startDate).getFullYear();
       const srcDate = parseISO(src.date);
       let dstDate = iso(
         new Date(targetYearNumber, srcDate.getMonth(), srcDate.getDate())
       );
-
-      // If destination lands on Sat/Sun, push to next business day (Mon–Fri)
-      if (!onlyMF(parseISO(dstDate))) {
+      if (!onlyMF(parseISO(dstDate)))
         dstDate = iso(nextBusinessDay(parseISO(dstDate), +1));
-      }
 
-      // Ensure unique ids (avoids React key collisions if duplicates land on same day/period)
       const base = `${currentUser.uid}__${selectedYearId}__${
         src.periodId || uid()
       }__${dstDate}`;
       const existing = [...plans, ...written];
       const dstId = makeUniqueId(base, existing);
-
       const dstRef = doc(db, "lessonPlans", dstId);
 
-      // Resolve the period's name from the *source* year's periods, so it survives even if
-      // the target year doesn't have the same period id
       const srcPeriod = copyFromYearPeriods.find((p) => p.id === src.periodId);
-
-      // Light copy; keep plan content and colors
       const { id: _drop, schoolYearId: _oldYear, meta: _m, ...rest } = src;
+
       const payload: LessonPlan = {
         ...rest,
         schoolYearId: selectedYearId,
         date: dstDate,
-        // add periodName so UI can display it even if periodMap misses
         periodName: srcPeriod?.name,
         meta: { createdAt: new Date(), updatedAt: new Date() },
       };
-
       batch.set(dstRef, clean(payload), { merge: true });
       written.push({ ...payload, id: dstId });
     });
 
     await batch.commit();
 
-    // reflect if the copied range intersects the current visible range
     setPlans((prev) => {
       const within = written.filter((p) =>
         isWithinInterval(parseISO(p.date), {
@@ -1488,7 +1659,7 @@ function PlansBody() {
     setCopyDialogOpen(false);
   }
 
-  // ---------- Header bar ----------
+  // Header
   const headerBar = (
     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
       <div className="flex items-center gap-2">
@@ -1536,7 +1707,6 @@ function PlansBody() {
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        {/* School Year (required) */}
         <Select value={selectedYearId} onValueChange={setSelectedYearId}>
           <SelectTrigger className="w-[220px]">
             <SelectValue placeholder="Select School Year" />
@@ -1550,7 +1720,6 @@ function PlansBody() {
           </SelectContent>
         </Select>
 
-        {/* View switch */}
         <Select value={view} onValueChange={(v: any) => setView(v)}>
           <SelectTrigger className="w-[140px]">
             <SelectValue />
@@ -1562,7 +1731,6 @@ function PlansBody() {
           </SelectContent>
         </Select>
 
-        {/* Theme toggle */}
         <Button variant="outline" onClick={toggleTheme}>
           {prefs.theme === "dark" ? (
             <>
@@ -1575,7 +1743,6 @@ function PlansBody() {
           )}
         </Button>
 
-        {/* Print */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button>
@@ -1623,8 +1790,12 @@ function PlansBody() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-
-        {/* Copy Year */}
+        <Button variant="outline" asChild>
+          <Link href="/sharing">
+            <Share2 className="h-4 w-4 mr-2" />
+            Sharing
+          </Link>
+        </Button>
         <Button variant="outline" onClick={() => setCopyDialogOpen(true)}>
           Copy Year (Period)
         </Button>
@@ -1632,7 +1803,7 @@ function PlansBody() {
     </div>
   );
 
-  // ---------- Cells ----------
+  // One day cell
   function renderCell(d: Date) {
     const dateStr = iso(d);
     const inMonth = isSameMonth(d, cursor);
@@ -1645,7 +1816,8 @@ function PlansBody() {
         className={cn(
           "border p-2 min-h-[140px] relative group",
           !inMonth && "bg-muted/30",
-          isToday && "ring-2 ring-primary"
+          isToday && "ring-2 ring-primary",
+          isNonSchool(dateStr) && "bg-red-100 dark:bg-amber-900/20" // non-school day tint
         )}
         onContextMenu={(e) => onCellContext(e, dateStr)}
       >
@@ -1657,8 +1829,12 @@ function PlansBody() {
               variant="ghost"
               size="icon"
               className="h-6 w-6"
-              title="Add plan"
-              onClick={() => openQuickCreate(dateStr)}
+              title={isNonSchool(dateStr) ? "Add event" : "Add plan"}
+              onClick={() =>
+                isNonSchool(dateStr)
+                  ? openQuickCreateEvent(dateStr)
+                  : openQuickCreate(dateStr)
+              }
             >
               <Plus className="h-4 w-4" />
             </Button>
@@ -1674,14 +1850,14 @@ function PlansBody() {
                   More options…
                 </div>
                 <DropdownMenuSeparator />
-                {/* Cascade toggle applies when a plan context is open */}
                 <DropdownMenuCheckboxItem
-                  checked={cascadeShift}
-                  onCheckedChange={(v) => setCascadeShift(!!v)}
-                  disabled={!menu?.plan}
+                  checked={isNonSchool(dateStr)}
+                  onCheckedChange={(ck) => toggleNonSchoolDay(dateStr, !!ck)}
                 >
-                  Cascade future (same period)
+                  Non-school day
                 </DropdownMenuCheckboxItem>
+
+                <DropdownMenuSeparator />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -1690,12 +1866,10 @@ function PlansBody() {
         <div className="mt-2 space-y-2">
           {dayPlans.length ? (
             dayPlans.map((plan) => {
-              // Apply live preview colors when editing this plan in the quick modal
               const previewHit =
                 colorPreview && colorPreview.planId === plan.id
                   ? colorPreview
                   : null;
-
               const period = periodMap.get(plan.periodId);
               const bg =
                 previewHit?.colorBg ??
@@ -1721,12 +1895,11 @@ function PlansBody() {
                   onClick={() => openEditor(plan)}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    e.stopPropagation(); // prevent parent cell from overwriting
+                    e.stopPropagation();
                     onCellContext(e, dateStr, plan);
                   }}
                   className="rounded-md overflow-hidden border cursor-pointer bg-card text-card-foreground border-border"
                 >
-                  {/* Plan header */}
                   <div
                     className="px-2 py-1 text-xs font-semibold flex items-center justify-between"
                     style={{ background: bg, color: tx }}
@@ -1742,7 +1915,6 @@ function PlansBody() {
                     </span>
                   </div>
 
-                  {/* Body: show non-empty sections */}
                   <div className="p-2 space-y-1 text-xs">
                     {plan.topic && <Line label="Topic" value={plan.topic} />}
                     {plan.objective && (
@@ -1810,11 +1982,10 @@ function PlansBody() {
 
   return (
     <div className="p-4 md:p-6">
-      {/* === START: Non-print content is hidden during print to avoid blank pages === */}
+      {/* === START: Non-print content is hidden during print === */}
       <div className="print:hidden">
         <Toaster />
 
-        {/* Header / Controls */}
         <Card className="mb-4">
           <CardHeader className="pb-2">
             <CardTitle>Lesson Plan Calendar</CardTitle>
@@ -1822,13 +1993,11 @@ function PlansBody() {
           <CardContent>{headerBar}</CardContent>
         </Card>
 
-        {/* Grid */}
         <div
           className={cn(
             "grid grid-cols-5 gap-px bg-border print:bg-transparent"
           )}
         >
-          {/* Weekday header */}
           {weekdays.map((w) => (
             <div
               key={w}
@@ -1837,7 +2006,6 @@ function PlansBody() {
               {w}
             </div>
           ))}
-          {/* Days */}
           {gridDates.map((d) => renderCell(d))}
         </div>
 
@@ -1846,7 +2014,7 @@ function PlansBody() {
           <div
             ref={menuRef}
             className="fixed z-50 w-64 rounded-md border bg-popover text-popover-foreground shadow-md"
-            style={{ left: menu.x, top: menu.y }}
+            style={{ left: menuPos.left, top: menuPos.top }} // ⬅️ use computed pos
           >
             <div className="px-3 py-2 text-xs text-muted-foreground border-b">
               {menu.date}
@@ -1854,15 +2022,13 @@ function PlansBody() {
             </div>
 
             <div className="py-1">
-              {/* Edit (plan only) */}
               {menu.plan && (
                 <button
                   className="w-full px-3 py-2 text-left hover:bg-muted/40"
                   onClick={() => {
                     setQuickDate(menu.date);
-                    setQuickEditPlan(menu.plan!); // open in edit mode
+                    setQuickEditPlan(menu.plan!);
                     setQuickPeriodId(menu.plan!.periodId || null);
-                    // initialize preview with current colors
                     setColorPreview({
                       planId: menu.plan!.id!,
                       colorBg: menu.plan!.colorBg,
@@ -1876,7 +2042,6 @@ function PlansBody() {
                 </button>
               )}
 
-              {/* Copy (plan only) */}
               {menu.plan && (
                 <button
                   className="w-full px-3 py-2 text-left hover:bg-muted/40"
@@ -1889,7 +2054,21 @@ function PlansBody() {
                 </button>
               )}
 
-              {/* Paste (available for date or plan) */}
+              {/* Delete in the same menu */}
+              {menu.plan && (
+                <button
+                  className="w-full px-3 py-2 text-left hover:bg-muted/40 text-destructive"
+                  onClick={() => {
+                    setConfirmPlan(menu.plan!);
+                    setConfirmDate(menu.date);
+                    setConfirmOpen(true);
+                    setMenu(null);
+                  }}
+                >
+                  Delete
+                </button>
+              )}
+
               <button
                 className={cn(
                   "w-full px-3 py-2 text-left hover:bg-muted/40",
@@ -1905,10 +2084,8 @@ function PlansBody() {
                 Paste
               </button>
 
-              {/* ---- Bump Forward ---- */}
               <div className="px-3 pt-2 pb-1 text-xs text-muted-foreground">
-                Push Forward
-                {!menu.plan && " (all plans on this date)"}
+                Push Forward{!menu.plan && " (all plans on this date)"}
               </div>
               <div className="px-3 pb-2 flex items-center gap-2">
                 <input
@@ -1926,29 +2103,24 @@ function PlansBody() {
                   className="ml-auto rounded px-2 py-1 text-sm border hover:bg-muted/40"
                   onClick={async () => {
                     if (menu.plan) {
-                      // shift one plan forward; get its new version back
                       const moved = await shift(
                         menu.plan!,
                         +1,
                         shiftCountForward
                       );
-                      // If not cascading, retarget to the moved plan so next Apply hits the new one
-                      if (!cascadeShift && moved[0]) {
+                      if (!cascadeShift && moved[0])
                         setMenu({
                           ...menu,
                           date: moved[0].date,
                           plan: moved[0],
                         });
-                      }
                     } else {
-                      // bump whole day forward; retarget the menu to the new date
                       const newDate = iso(
                         addDays(parseISO(menu.date), +1 * shiftCountForward)
                       );
                       await bumpDate(menu.date, +1, shiftCountForward);
                       setMenu({ ...menu, date: newDate });
                     }
-                    // Reset counts after applying
                     setShiftCountForward(1);
                     setShiftCountBackward(1);
                   }}
@@ -1957,10 +2129,8 @@ function PlansBody() {
                 </button>
               </div>
 
-              {/* ---- Bump Backward ---- */}
               <div className="px-3 pt-2 pb-1 text-xs text-muted-foreground">
-                Push Backward
-                {!menu.plan && " (all plans on this date)"}
+                Push Backward{!menu.plan && " (all plans on this date)"}
               </div>
               <div className="px-3 pb-2 flex items-center gap-2">
                 <input
@@ -1983,13 +2153,12 @@ function PlansBody() {
                         -1,
                         shiftCountBackward
                       );
-                      if (!cascadeShift && moved[0]) {
+                      if (!cascadeShift && moved[0])
                         setMenu({
                           ...menu,
                           date: moved[0].date,
                           plan: moved[0],
                         });
-                      }
                     } else {
                       const newDate = iso(
                         addDays(parseISO(menu.date), -1 * shiftCountBackward)
@@ -2005,7 +2174,6 @@ function PlansBody() {
                 </button>
               </div>
 
-              {/* ---- Cascade toggle (visible when a plan is selected) ---- */}
               <div className="px-3 pt-2 pb-2 text-xs flex items-center gap-2">
                 <input
                   id="cascadeToggle"
@@ -2030,7 +2198,7 @@ function PlansBody() {
             if (!v) {
               setQuickEditPlan(null);
               setColorPreview(null);
-              setQuickIsEvent(false); // reset mode on close
+              setQuickIsEvent(false);
             }
             setQuickOpen(v);
           }}
@@ -2039,25 +2207,26 @@ function PlansBody() {
           editPlan={quickEditPlan || undefined}
           onUpdate={updateQuickPlan}
           onPreviewColors={(v) => {
-            if (!quickEditPlan?.id || !v) {
-              setColorPreview(null);
-            } else {
-              setColorPreview({ planId: quickEditPlan.id, ...v });
-            }
+            if (!quickEditPlan?.id || !v) setColorPreview(null);
+            else setColorPreview({ planId: quickEditPlan.id, ...v });
           }}
-          // In Event mode, hide period dropdown by giving an empty list + null selection
           periods={quickIsEvent ? [] : periods}
           selectedPeriodId={quickIsEvent ? null : quickPeriodId}
           onChangePeriodId={setQuickPeriodId}
-          // NEW: mode wiring
           isEventMode={quickIsEvent}
           onRequestEvent={() => {
             setQuickIsEvent(true);
-            setQuickPeriodId(null); // ensure no period in Event mode
+            setQuickPeriodId(null);
           }}
           onRequestPlan={() => {
+            if (quickDate && isNonSchool(quickDate)) {
+              toast({
+                title: "Non-school day",
+                description: "You can only add events on this date.",
+              });
+              return;
+            }
             setQuickIsEvent(false);
-            // restore a default period when switching back to Plan mode
             if (!quickPeriodId && periods[0]) setQuickPeriodId(periods[0].id);
           }}
         />
@@ -2071,8 +2240,6 @@ function PlansBody() {
             editingPlan
               ? (() => {
                   const p = periods.find((x) => x.id === editingPlan.periodId);
-
-                  // coerce to a number safely
                   const raw =
                     (p as any)?.totalStudents ??
                     (p as any)?.studentCount ??
@@ -2081,10 +2248,8 @@ function PlansBody() {
                   const studentCount = Number.isFinite(Number(raw))
                     ? Number(raw)
                     : 0;
-
                   return {
                     id: p?.id ?? (editingPlan.periodId || ""),
-                    // ⬇️ key line: use plan.periodName if no matching period in target year
                     name: p?.name ?? editingPlan.periodName ?? "Class Period",
                     startTime: undefined,
                     endTime: undefined,
@@ -2102,6 +2267,39 @@ function PlansBody() {
           onDeleteAttachment={deleteAttachment}
           saving={editorLoading}
         />
+
+        {/* Delete confirmation modal (single instance at root) */}
+        <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <DialogContent className="sm:max-w-[380px]">
+            <DialogHeader>
+              <DialogTitle>Delete plan?</DialogTitle>
+              <DialogDescription>
+                This will permanently remove{" "}
+                <span className="font-medium">
+                  {confirmPlan?.name?.trim() || "Untitled"}
+                </span>
+                {confirmDate ? ` on ${confirmDate}` : ""}. This action cannot be
+                undone.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="mt-2">
+              <Button variant="outline" onClick={() => setConfirmOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={async () => {
+                  if (confirmPlan) await deletePlan(confirmPlan);
+                  setConfirmOpen(false);
+                  setConfirmPlan(null);
+                  setConfirmDate(null);
+                }}
+              >
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
       {/* === END: Non-print content hidden during print === */}
 
@@ -2111,19 +2309,15 @@ function PlansBody() {
           className="hidden print:block absolute inset-0 bg-white p-6"
           ref={printRef}
         >
-          {/* PRINT: only days that have at least one non-empty plan; now filtered by selected periods if any */}
           <div className="space-y-3">
             {gridDates.map((d) => {
               const dateStr = iso(d);
               let dayPlans = (plansByDate.get(dateStr) || []) as LessonPlan[];
-
               if (printPeriodFilter.length) {
                 dayPlans = dayPlans.filter((p) =>
                   printPeriodFilter.includes(p.periodId)
                 );
               }
-
-              // a plan is "printable" if it has any real content:
               const printable = dayPlans.filter((plan) => {
                 const name = (plan.name ?? "").trim();
                 const nameIsMeaningful =
@@ -2139,7 +2333,6 @@ function PlansBody() {
                   plan.notes,
                   plan.standards,
                 ].some((v) => !!v && !!v.trim());
-
                 return (
                   nameIsMeaningful ||
                   hasTimes ||
@@ -2147,13 +2340,11 @@ function PlansBody() {
                   hasTextSections
                 );
               });
-
-              if (printable.length === 0) return null;
+              if (!printable.length) return null;
 
               return (
                 <div key={dateStr} className="break-inside-avoid">
                   <h2 className="font-semibold">{format(d, "EEEE, MMM d")}</h2>
-
                   <div className="grid md:grid-cols-2 gap-2">
                     {printable.map((plan) => {
                       const period = periodMap.get(plan.periodId);
@@ -2170,13 +2361,9 @@ function PlansBody() {
 
                       return (
                         <div key={plan.id} className="border rounded">
-                          {/* header strip uses per-plan -> period colors */}
                           <div
                             className="px-2 py-1 text-sm font-semibold"
-                            style={{
-                              background: bg,
-                              color: tx,
-                            }}
+                            style={{ background: bg, color: tx }}
                           >
                             {headerPieces.length
                               ? headerPieces.join(" • ") + " — "
@@ -2191,7 +2378,6 @@ function PlansBody() {
                               : ""}
                           </div>
 
-                          {/* body shows only present sections */}
                           <div className="p-2 text-sm space-y-1">
                             {plan.topic && (
                               <Line label="Topic" value={plan.topic} />
@@ -2307,7 +2493,7 @@ function PlansBody() {
         </DialogContent>
       </Dialog>
 
-      {/* Hide global header/logo/menu only in print */}
+      {/* Print CSS tweaks */}
       <style jsx global>{`
         @media print {
           header {

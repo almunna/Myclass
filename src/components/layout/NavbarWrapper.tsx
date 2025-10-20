@@ -9,9 +9,15 @@ interface NavbarWrapperProps {
 
 export function NavbarWrapper({ children }: NavbarWrapperProps) {
   const pathname = usePathname();
-  const isAuthPage = pathname?.includes("/login") || pathname?.includes("/signup");
-  const showNavbarAndFooter = !isAuthPage;
 
+  // ✅ Added /student-login and /forgot-password to hide the navbar there too
+  const isAuthPage =
+    pathname?.includes("/login") ||
+    pathname?.includes("/signup") ||
+    pathname?.includes("/student-login") ||
+    pathname?.includes("/forgot-password");
+
+  const showNavbarAndFooter = !isAuthPage;
 
   return (
     <div className="flex flex-col min-h-svh">
@@ -22,4 +28,4 @@ export function NavbarWrapper({ children }: NavbarWrapperProps) {
       {/* {showNavbarAndFooter && <Footer />} */}
     </div>
   );
-} 
+}

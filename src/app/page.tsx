@@ -87,10 +87,15 @@ export default function LandingPage() {
               Effortless Student
               <span className="text-blue-600 block">Tracking & Management</span>
             </h1>
-            <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto leading-relaxed">
-              Streamline your classroom with powerful tools for daily attendance
-              tracking, student management, room exit monitoring, and
-              comprehensive reporting. Save time and stay organized.
+            <p className="text-xl text-gray-600 mb-8 max-w-4xl mx-auto leading-relaxed">
+              Elevate your classroom management with a comprehensive suite of
+              tools designed to bring clarity, efficiency, and control to your
+              daily routines. Streamline lesson planning, monitor attendance in
+              real time, track student behavior and movement, and customize
+              seating charts to meet individual needs—all in one intuitive
+              platform. Spend less time managing logistics and more time
+              focusing on what matters most: inspiring and engaging your
+              students.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               {currentUser ? (
@@ -123,6 +128,30 @@ export default function LandingPage() {
             <p className="text-sm text-gray-500 mt-4">
               Get started in under 2 minutes
             </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-4 justify-center mt-6">
+            <a
+              href="https://play.google.com/store/apps/details?id=com.myclasslog"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                src="/google-play-badge-logo.png"
+                alt="Get it on Google Play"
+                className="h-14 mx-auto sm:mx-0"
+              />
+            </a>
+            <a
+              href="https://apps.apple.com/app/myclasslog/id000000000"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <img
+                src="/download-on-the-app-store-apple-logo.png"
+                alt="Download on the App Store"
+                className="h-14 mx-auto sm:mx-0"
+              />
+            </a>
           </div>
         </div>
       </section>

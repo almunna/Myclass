@@ -40,6 +40,9 @@ import {
 import { db, storage } from "@/firebase/firebase";
 import { ref as storageRef, getDownloadURL } from "firebase/storage";
 
+/* ✅ NEW: standards actions */
+import StandardsControls from "@/components/plans/standard";
+
 /* ===========================
    Field key union (for per-field colors)
    =========================== */
@@ -105,18 +108,26 @@ function EditableRow({
   setValue,
   color,
   setColor,
+  actions, // ✅ NEW: inline actions beside the label
 }: {
   label: string;
   value: string;
   setValue: (v: string) => void;
   color?: string;
   setColor: (c: string) => void;
+  actions?: React.ReactNode; // ✅ NEW
 }) {
   const [editing, setEditing] = React.useState(false);
 
   return (
     <div className="leading-6 flex items-start gap-2">
       <span className="font-semibold shrink-0">{label}:</span>
+
+      {/* ✅ show actions like Search | Add new | Import beside the label */}
+      {actions && (
+        <div className="ml-2 flex items-center gap-3 shrink-0">{actions}</div>
+      )}
+
       {!editing ? (
         <button
           type="button"
@@ -363,7 +374,20 @@ export function LessonPlanModal({
     };
   }, [period?.id, plan?.teacherId]);
 
-  const clearAllFields = React.useCallback(() => {
+  const clearAllFields = React.useCallback(async () => {
+    // 1) Delete all existing attachments from Storage via the provided handler
+    try {
+      const atts = [...(plan?.attachments ?? [])];
+      if (atts.length) {
+        await Promise.all(
+          atts.map((a) => Promise.resolve(onDeleteAttachment(a)))
+        );
+      }
+    } catch {
+      /* ignore individual delete errors; UI state will still be cleared below */
+    }
+
+    // 2) Clear all content fields, field colors, times and local attachments array
     safeSet({
       topic: "",
       objective: "",
@@ -372,12 +396,17 @@ export function LessonPlanModal({
       homework: "",
       notes: "",
       standards: "",
+      startTime: undefined,
+      endTime: undefined,
+      fieldColors: {},
+      attachments: [],
     });
-  }, []);
+  }, [plan?.attachments, onDeleteAttachment]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto p-0 rounded border border-border bg-background text-foreground">
+      {/* CHANGED: make DialogContent a flex column and remove its scrolling */}
+      <DialogContent className="max-w-3xl max-h-[85vh] p-0 rounded border border-border bg-background text-foreground flex flex-col">
         <DialogHeader className="sr-only">
           <DialogTitle>
             {period?.name
@@ -389,162 +418,169 @@ export function LessonPlanModal({
           </DialogTitle>
         </DialogHeader>
 
-        <div
-          className="px-4 py-2"
-          style={{ background: headerBg, color: headerText }}
-        >
-          <div className="flex items-center justify-between gap-3 w-full">
-            <div className="flex flex-col min-w-[160px]">
-              <div className="text-[15px] font-semibold truncate">
-                {period?.name || "Class Period"}
+        {/* NEW: scrollable content wrapper so footer stays fixed */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <div
+            className="px-4 py-2"
+            style={{ background: headerBg, color: headerText }}
+          >
+            <div className="flex items-center justify-between gap-3 w-full">
+              <div className="flex flex-col min-w-[160px]">
+                <div className="text-[15px] font-semibold truncate">
+                  {period?.name || "Class Period"}
+                </div>
+                <div className="text-sm opacity-90">{period?.grade || ""}</div>
               </div>
-              <div className="text-sm opacity-90">{period?.grade || ""}</div>
-            </div>
-            <div className="flex-1 text-center text-[15px] font-medium">
-              Total Students: {studentCount ?? period?.studentCount ?? 0}
-            </div>
-            <div className="text-[15px] font-medium min-w-[140px] text-right">
-              {(() => {
-                const start = period?.startTime ?? plan.startTime;
-                const end = period?.endTime ?? plan.endTime;
-                return start || end
-                  ? `${start ?? ""}${end ? ` – ${end}` : ""}`
-                  : "";
-              })()}
+              <div className="flex-1 text-center text-[15px] font-medium">
+                Total Students: {studentCount ?? period?.studentCount ?? 0}
+              </div>
+              <div className="text-[15px] font-medium min-w-[140px] text-right">
+                {(() => {
+                  const start = period?.startTime ?? plan.startTime;
+                  const end = period?.endTime ?? plan.endTime;
+                  return start || end
+                    ? `${start ?? ""}${end ? ` – ${end}` : ""}`
+                    : "";
+                })()}
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="p-3 m-3 border rounded-sm bg-card text-card-foreground border-border">
-          <div className="text-[15px] space-y-1">
-            <EditableRow
-              label="Topic"
-              value={plan.topic ?? ""}
-              setValue={(v) => safeSet({ topic: v })}
-              color={plan.fieldColors?.topic}
-              setColor={(c) => setFieldColor("topic", c)}
-            />
-            <EditableRow
-              label="Objective"
-              value={plan.objective ?? ""}
-              setValue={(v) => safeSet({ objective: v })}
-              color={plan.fieldColors?.objective}
-              setColor={(c) => setFieldColor("objective", c)}
-            />
-            <EditableRow
-              label="Resources"
-              value={plan.resources ?? ""}
-              setValue={(v) => safeSet({ resources: v })}
-              color={plan.fieldColors?.resources}
-              setColor={(c) => setFieldColor("resources", c)}
-            />
-            <EditableRow
-              label="Assignments"
-              value={plan.assignments ?? ""}
-              setValue={(v) => safeSet({ assignments: v })}
-              color={plan.fieldColors?.assignments}
-              setColor={(c) => setFieldColor("assignments", c)}
-            />
-            <EditableRow
-              label="Homework"
-              value={plan.homework ?? ""}
-              setValue={(v) => safeSet({ homework: v })}
-              color={plan.fieldColors?.homework}
-              setColor={(c) => setFieldColor("homework", c)}
-            />
-            <EditableRow
-              label="Notes"
-              value={plan.notes ?? ""}
-              setValue={(v) => safeSet({ notes: v })}
-              color={plan.fieldColors?.notes}
-              setColor={(c) => setFieldColor("notes", c)}
-            />
-            <EditableRow
-              label="Standards"
-              value={plan.standards ?? ""}
-              setValue={(v) => safeSet({ standards: v })}
-              color={plan.fieldColors?.standards}
-              setColor={(c) => setFieldColor("standards", c)}
-            />
-          </div>
-        </div>
+          <div className="p-3 m-3 border rounded-sm bg-card text-card-foreground border-border">
+            <div className="text-[15px] space-y-1">
+              <EditableRow
+                label="Topic"
+                value={plan.topic ?? ""}
+                setValue={(v) => safeSet({ topic: v })}
+                color={plan.fieldColors?.topic}
+                setColor={(c) => setFieldColor("topic", c)}
+              />
+              <EditableRow
+                label="Objective"
+                value={plan.objective ?? ""}
+                setValue={(v) => safeSet({ objective: v })}
+                color={plan.fieldColors?.objective}
+                setColor={(c) => setFieldColor("objective", c)}
+              />
+              <EditableRow
+                label="Resources"
+                value={plan.resources ?? ""}
+                setValue={(v) => safeSet({ resources: v })}
+                color={plan.fieldColors?.resources}
+                setColor={(c) => setFieldColor("resources", c)}
+              />
+              <EditableRow
+                label="Assignments"
+                value={plan.assignments ?? ""}
+                setValue={(v) => safeSet({ assignments: v })}
+                color={plan.fieldColors?.assignments}
+                setColor={(c) => setFieldColor("assignments", c)}
+              />
+              <EditableRow
+                label="Homework"
+                value={plan.homework ?? ""}
+                setValue={(v) => safeSet({ homework: v })}
+                color={plan.fieldColors?.homework}
+                setColor={(c) => setFieldColor("homework", c)}
+              />
+              <EditableRow
+                label="Notes"
+                value={plan.notes ?? ""}
+                setValue={(v) => safeSet({ notes: v })}
+                color={plan.fieldColors?.notes}
+                setColor={(c) => setFieldColor("notes", c)}
+              />
 
-        <div className="px-4 pb-3">
-          <div className="mb-3">
-            <Label className="mb-1 block">Add Attachment</Label>
-            <Input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              onChange={async (e) => {
-                // <-- this passes ALL selected files in one event to your handler
-                await onUploadAttachment(e);
-                if (fileInputRef.current) fileInputRef.current.value = "";
-              }}
-            />
-
-            {!!plan.attachments?.length && (
+              {/* 🔽 Standards text field removed; only the selector remains */}
               <div className="mt-2">
-                <Label className="mb-1 block text-xs text-muted-foreground">
-                  Attachments
-                </Label>
-                <ul className="divide-y rounded border">
-                  {plan.attachments!.map((a) => (
-                    <li
-                      key={a.storagePath}
-                      className="flex items-center justify-between gap-2 p-2"
-                    >
-                      <a
-                        href={a.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex items-center gap-2 truncate"
-                        title={a.name}
-                      >
-                        <Paperclip className="h-4 w-4 shrink-0" />
-                        <span className="truncate">{a.name}</span>
-                      </a>
-
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            title="Delete attachment"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>
-                              Delete Attachment?
-                            </AlertDialogTitle>
-                            <AlertDialogDescription>
-                              This will permanently remove{" "}
-                              <strong>{a.name}</strong> from the plan.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction
-                              onClick={() => onDeleteAttachment(a)}
-                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            >
-                              Delete
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
-                    </li>
-                  ))}
-                </ul>
+                <div className="font-semibold mb-1">Standards</div>
+                <StandardsControls
+                  teacherId={plan.teacherId}
+                  value={plan.standards ?? ""}
+                  onChange={(next) => safeSet({ standards: next })}
+                />
               </div>
-            )}
+            </div>
+          </div>
+
+          <div className="px-4 pb-3">
+            <div className="mb-3">
+              <Label className="mb-1 block">Add Attachment</Label>
+              <Input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                onChange={async (e) => {
+                  // <-- this passes ALL selected files in one event to your handler
+                  await onUploadAttachment(e);
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                }}
+              />
+
+              {!!plan.attachments?.length && (
+                <div className="mt-2">
+                  <Label className="mb-1 block text-xs text-muted-foreground">
+                    Attachments
+                  </Label>
+                  <ul className="divide-y rounded border">
+                    {plan.attachments!.map((a) => (
+                      <li
+                        key={a.storagePath}
+                        className="flex items-center justify-between gap-2 p-2"
+                      >
+                        <a
+                          href={a.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex items-center gap-2 truncate"
+                          title={a.name}
+                        >
+                          <Paperclip className="h-4 w-4 shrink-0" />
+                          <span className="truncate">{a.name}</span>
+                        </a>
+
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              title="Delete attachment"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>
+                                Delete Attachment?
+                              </AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will permanently remove{" "}
+                                <strong>{a.name}</strong> from the plan.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction
+                                onClick={() => onDeleteAttachment(a)}
+                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                              >
+                                Delete
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
+        {/* Footer stays visible (not part of the scroll area) */}
         <DialogFooter className="px-4 pb-4 flex items-center justify-between gap-3">
           <div className="text-sm text-muted-foreground">
             {format(parseISO(plan.date), "EEEE, MMM d, yyyy")}

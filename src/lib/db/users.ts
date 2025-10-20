@@ -15,7 +15,7 @@ export interface UserSubscription {
   email: string;
   stripeCustomerId?: string;
   subscriptionStatus: "active" | "inactive" | "cancelled" | "past_due";
-  subscriptionPlan?: "free" | "basic" | "premium" | "admin";
+  subscriptionPlan?: "free" | "basic" | "premium" | "admin" | "student";
   subscriptionStartDate?: any;
   subscriptionEndDate?: any;
   lastPaymentDate?: any;

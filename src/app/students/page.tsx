@@ -56,8 +56,6 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useAuth } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
-// import { useSubscriptionAccess } from "@/hooks/useSubscriptionAccess";
-// import { NoAccess } from "@/components/NoAccess";
 import { ImportStudents } from "@/components/students/ImportStudents";
 
 interface Student {
@@ -108,10 +106,15 @@ export default function StudentsPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
 
+  // NEW: plan access + previous ID tracker
+  const [hasPlanAccess, setHasPlanAccess] = useState(false);
+  const [prevStudentId, setPrevStudentId] = useState<string | null>(null);
+
   // Fetch students and periods on mount
   useEffect(() => {
     fetchStudents();
     fetchPeriods();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Helpers for sorting
@@ -143,11 +146,11 @@ export default function StudentsPage() {
 
     // Search filter
     if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
+      const queryText = searchQuery.toLowerCase();
       filtered = filtered.filter(
         (student) =>
-          student.name.toLowerCase().includes(query) ||
-          student.studentId.toLowerCase().includes(query)
+          student.name.toLowerCase().includes(queryText) ||
+          student.studentId.toLowerCase().includes(queryText)
       );
     }
 
@@ -182,6 +185,7 @@ export default function StudentsPage() {
     setSelectedIds((prev) =>
       prev.filter((id) => filtered.some((s) => s.id === id))
     );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     students,
     searchQuery,
@@ -294,6 +298,8 @@ export default function StudentsPage() {
     setName("");
     setStudentId("");
     setSelectedPeriods([]);
+    setHasPlanAccess(false);
+    setPrevStudentId(null);
     setIsOpen(true);
   };
 
@@ -306,6 +312,8 @@ export default function StudentsPage() {
         setCurrentStudentId(studentId);
         setName(data.name);
         setStudentId(data.studentId);
+        setHasPlanAccess(!!data.hasPlanAccess);
+        setPrevStudentId(data.studentId || null);
 
         // Handle both old (single period) and new (multiple periods) formats
         if (Array.isArray(data.periods)) {
@@ -324,6 +332,50 @@ export default function StudentsPage() {
     }
   };
 
+  // ======== Student Login Creds Helpers ========
+  const STUDENT_CREDS_COLL = "studentLogins";
+
+  const assertLoginUniqueOrThrow = async (candidateId: string) => {
+    const credSnap = await getDoc(doc(db, STUDENT_CREDS_COLL, candidateId));
+    const isSameAsBefore = isEditMode && prevStudentId === candidateId;
+    if (credSnap.exists() && !isSameAsBefore) {
+      throw new Error("Student ID is already used for login credentials");
+    }
+  };
+
+  const upsertStudentCreds = async (
+    studentRefId: string,
+    sid: string,
+    displayName: string,
+    periodIds: string[]
+  ) => {
+    const ref = doc(db, "studentLogins", sid);
+    await setDoc(
+      ref,
+      {
+        username: sid,
+        password: sid,
+        studentRef: studentRefId, // "students/{id}"
+        teacherId: currentUser?.uid,
+        name: displayName,
+        periodIds, // ✅ store allowed periods here
+        updatedAt: new Date(),
+        enabled: true,
+      },
+      { merge: true }
+    );
+  };
+
+  const deleteStudentCreds = async (sid: string | null | undefined) => {
+    if (!sid) return;
+    try {
+      await deleteDoc(doc(db, STUDENT_CREDS_COLL, sid));
+    } catch {
+      // ignore
+    }
+  };
+  // =============================================
+
   const handleSaveStudent = async () => {
     if (!name || !studentId) {
       toast.error("Name and Student ID are required");
@@ -331,6 +383,24 @@ export default function StudentsPage() {
     }
 
     try {
+      // NEW: Ensure studentId is unique among students for this teacher
+      const dupQuery = query(
+        collection(db, "students"),
+        where("teacherId", "==", currentUser?.uid),
+        where("studentId", "==", studentId)
+      );
+      const dupSnap = await getDocs(dupQuery);
+      const duplicate = dupSnap.docs.find((d) => d.id !== currentStudentId);
+      if (duplicate) {
+        toast.error("Student ID already exists. Choose a different one.");
+        return;
+      }
+
+      // If enabling plan access, ensure unique login ID in creds
+      if (hasPlanAccess) {
+        await assertLoginUniqueOrThrow(studentId);
+      }
+
       const studentRef =
         isEditMode && currentStudentId
           ? doc(db, "students", currentStudentId)
@@ -345,20 +415,44 @@ export default function StudentsPage() {
         };
       });
 
-      await setDoc(studentRef, {
-        name,
-        studentId,
-        periods: periodsWithNames,
-        teacherId: currentUser?.uid,
-        updatedAt: new Date(),
-      });
+      await setDoc(
+        studentRef,
+        {
+          name,
+          studentId,
+          periods: periodsWithNames,
+          teacherId: currentUser?.uid,
+          hasPlanAccess,
+          updatedAt: new Date(),
+        },
+        { merge: true }
+      );
+
+      // Manage credentials
+      if (hasPlanAccess) {
+        // If ID changed during edit, remove old login doc
+        if (isEditMode && prevStudentId && prevStudentId !== studentId) {
+          await deleteStudentCreds(prevStudentId);
+        }
+        await upsertStudentCreds(
+          studentRef.id,
+          studentId,
+          name,
+          selectedPeriods
+        );
+      } else {
+        // Access disabled => delete creds (old or current id)
+        await deleteStudentCreds(
+          isEditMode ? prevStudentId || studentId : studentId
+        );
+      }
 
       setIsOpen(false);
-      fetchStudents();
+      await fetchStudents();
       toast.success(isEditMode ? "Student updated" : "Student added");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error saving student:", error);
-      toast.error("Failed to save student");
+      toast.error(error?.message || "Failed to save student");
     }
   };
 
@@ -371,8 +465,18 @@ export default function StudentsPage() {
     if (!studentToDelete) return;
 
     try {
-      await deleteDoc(doc(db, "students", studentToDelete));
-      fetchStudents();
+      // fetch to get studentId for creds deletion
+      const snap = await getDoc(doc(db, "students", studentToDelete));
+      const sId = snap.exists() ? (snap.data().studentId as string) : null;
+
+      const batch = writeBatch(db);
+      batch.delete(doc(db, "students", studentToDelete));
+      await batch.commit();
+
+      // delete creds outside batch (different collection/doc id)
+      if (sId) await deleteStudentCreds(sId);
+
+      await fetchStudents();
       toast.success("Student deleted");
     } catch (error) {
       console.error("Error deleting student:", error);
@@ -387,13 +491,27 @@ export default function StudentsPage() {
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
     try {
+      // Load student docs to know their studentIds
+      const snaps = await Promise.all(
+        selectedIds.map((id) => getDoc(doc(db, "students", id)))
+      );
+
       const batch = writeBatch(db);
-      selectedIds.forEach((id) => {
-        batch.delete(doc(db, "students", id));
+      const toDeleteCreds: string[] = [];
+      snaps.forEach((snap) => {
+        if (snap.exists()) {
+          batch.delete(doc(db, "students", snap.id));
+          const sid = snap.data().studentId as string | undefined;
+          if (sid) toDeleteCreds.push(sid);
+        }
       });
       await batch.commit();
+
+      // remove creds (not in batch)
+      await Promise.all(toDeleteCreds.map(deleteStudentCreds));
+
       setSelectedIds([]);
-      fetchStudents();
+      await fetchStudents();
       toast.success("Selected students deleted");
     } catch (error) {
       console.error("Bulk delete error:", error);
@@ -470,7 +588,7 @@ export default function StudentsPage() {
 
   return (
     <ProtectedRoute>
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 py-8 mt-3">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">Students</h1>
           <div className="flex items-center gap-3">
@@ -794,6 +912,31 @@ export default function StudentsPage() {
                   className="col-span-3"
                 />
               </div>
+
+              {/* NEW: Has Plan Access */}
+              <div className="grid grid-cols-4 items-start gap-4">
+                <Label className="text-right pt-2">Plan Access</Label>
+                <div className="col-span-3 flex items-start space-x-2">
+                  <Checkbox
+                    id="hasPlanAccess"
+                    checked={hasPlanAccess}
+                    onCheckedChange={(v) => setHasPlanAccess(!!v)}
+                  />
+                  <div>
+                    <Label htmlFor="hasPlanAccess" className="font-medium">
+                      Has Plan Access
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      When enabled, a student login is created.
+                      <br />
+                      <span className="font-medium">Username</span> = Student
+                      ID, <span className="font-medium">Password</span> =
+                      Student ID. Ensure it’s unique.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-4 items-start gap-4">
                 <Label className="text-right pt-2">Periods</Label>
                 <div className="col-span-3 grid gap-2">

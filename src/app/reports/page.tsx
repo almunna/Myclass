@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "@/firebase/firebase";
 import { Button } from "@/components/ui/button";
@@ -319,6 +319,22 @@ export default function ReportsPage() {
    * Build behavior counts for relevant students (date-range aware).
    * Index by canonical student doc ID. Supports behavior docs with studentId or studentDocId.
    */
+
+  // 🔎 Students to show in the Student dropdown (match Attendance page behavior)
+  const filteredStudentOptions = useMemo(() => {
+    if (selectedPeriodId === "all") return students;
+
+    return students.filter((s) => {
+      // supports both shapes: periods[] and legacy periodId/periodName
+      if (Array.isArray(s.periods)) {
+        return s.periods.some((p) => p.id === selectedPeriodId);
+      }
+      if (s.periodId) {
+        return s.periodId === selectedPeriodId;
+      }
+      return false;
+    });
+  }, [students, selectedPeriodId]);
   useEffect(() => {
     const fetchBehaviorCounts = async () => {
       if (students.length === 0) {
@@ -465,7 +481,6 @@ export default function ReportsPage() {
         });
       }
     }
-
     // Period filter
     if (selectedPeriodId !== "all") {
       filtered = filtered.filter((exit) => exit.periodId === selectedPeriodId);
@@ -935,7 +950,7 @@ export default function ReportsPage() {
 
   return (
     <ProtectedRoute>
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 py-8 mt-3 ">
         <h1 className="text-2xl font-bold mb-6">Student Reports</h1>
 
         {isClient && (
@@ -1110,7 +1125,7 @@ export default function ReportsPage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All Students</SelectItem>
-                        {students.map((student) => (
+                        {filteredStudentOptions.map((student) => (
                           <SelectItem key={student.id} value={student.id}>
                             {student.name}
                           </SelectItem>

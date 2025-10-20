@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   collection,
   query,
@@ -46,10 +46,8 @@ import {
   PieChart,
   Pie,
   Cell,
-  LineChart,
-  Line,
-  Area,
   AreaChart,
+  Area,
 } from "recharts";
 import { useAuth } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
@@ -76,7 +74,6 @@ interface AttendanceRecord {
   studentId: string;
   studentName: string;
   status: "present" | "absent" | "tardy";
-  // NEW: track which period this record belongs to
   periodId?: string;
 }
 
@@ -96,7 +93,6 @@ export default function AttendancePage() {
   const { currentUser } = useAuth();
   const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
 
-  // Data states
   const [periods, setPeriods] = useState<Period[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
   const [filteredStudents, setFilteredStudents] = useState<Student[]>([]);
@@ -104,7 +100,6 @@ export default function AttendancePage() {
     { id: string; name: string }[]
   >([]);
 
-  // UI states
   const [selectedSchoolYearId, setSelectedSchoolYearId] =
     useState<string>("all");
   const [selectedPeriodId, setSelectedPeriodId] = useState<string>("");
@@ -112,7 +107,6 @@ export default function AttendancePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // Attendance states
   const [attendanceRecords, setAttendanceRecords] = useState<
     AttendanceRecord[]
   >([]);
@@ -121,20 +115,15 @@ export default function AttendancePage() {
     null
   );
 
-  // NEW: Sorting mode (first name / last name)
   const [sortMode, setSortMode] = useState<SortMode>("first");
-
-  // Active tab
   const [activeTab, setActiveTab] = useState("take-attendance");
 
-  // Reports states
   const [reportStartDate, setReportStartDate] = useState<Date>(new Date());
   const [reportEndDate, setReportEndDate] = useState<Date>(new Date());
   const [reportPeriodId, setReportPeriodId] = useState<string>("all");
   const [reportStudentId, setReportStudentId] = useState<string>("all");
   const [reportData, setReportData] = useState<any[]>([]);
 
-  // Analytics states
   const [analyticsData, setAnalyticsData] = useState<any>({
     summary: { present: 0, absent: 0, tardy: 0 },
     dailyTrends: [],
@@ -142,7 +131,26 @@ export default function AttendancePage() {
     periodStats: [],
   });
 
-  // Initialize data
+  // 🔹 When period changes, clean old records
+  useEffect(() => {
+    setExistingSessionId(null);
+    setHasUnsavedChanges(false);
+    setAttendanceRecords([]);
+  }, [selectedPeriodId]);
+
+  // 🔒 Strictly current period records (no fallback)
+  const periodRecords = useMemo(
+    () => attendanceRecords.filter((r) => r.periodId === selectedPeriodId),
+    [attendanceRecords, selectedPeriodId]
+  );
+
+  const reportStudents = useMemo(() => {
+    if (reportPeriodId === "all") return students;
+    return students.filter((s) =>
+      (s.periods || []).some((p) => p.id === reportPeriodId)
+    );
+  }, [students, reportPeriodId]);
+
   useEffect(() => {
     if (currentUser) {
       fetchPeriods();
@@ -150,7 +158,6 @@ export default function AttendancePage() {
     }
   }, [currentUser]);
 
-  // Filter students when period selection changes
   useEffect(() => {
     if (selectedPeriodId && selectedPeriodId !== "all") {
       const filtered = students.filter((student) =>
@@ -164,7 +171,6 @@ export default function AttendancePage() {
     }
   }, [selectedPeriodId, students]);
 
-  // Load existing attendance when date or period changes
   useEffect(() => {
     if (selectedPeriodId && selectedDate) {
       loadExistingAttendance();
@@ -173,19 +179,15 @@ export default function AttendancePage() {
 
   const fetchPeriods = async () => {
     try {
-      // Fetch school years first
       const schoolYearsQuery = query(
         collection(db, "schoolYears"),
         where("teacherId", "==", currentUser?.uid)
       );
       const schoolYearsSnapshot = await getDocs(schoolYearsQuery);
-      const schoolYearsList = schoolYearsSnapshot.docs.map((doc) => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          name: data.name || "Unnamed School Year",
-        };
-      });
+      const schoolYearsList = schoolYearsSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        name: doc.data().name || "Unnamed School Year",
+      }));
 
       const periodsQuery = query(
         collection(db, "periods"),
@@ -205,12 +207,11 @@ export default function AttendancePage() {
         };
       });
 
-      const sortedPeriods = periodsList.sort((a, b) => {
-        if (a.schoolYearName !== b.schoolYearName) {
-          return a.schoolYearName!.localeCompare(b.schoolYearName!);
-        }
-        return a.name.localeCompare(b.name);
-      });
+      const sortedPeriods = periodsList.sort((a, b) =>
+        a.schoolYearName !== b.schoolYearName
+          ? a.schoolYearName!.localeCompare(b.schoolYearName!)
+          : a.name.localeCompare(b.name)
+      );
 
       setPeriods(sortedPeriods);
       setSchoolYears(
@@ -224,13 +225,12 @@ export default function AttendancePage() {
 
   const fetchStudents = async () => {
     try {
-      const studentsQuery = query(
+      const q = query(
         collection(db, "students"),
         where("teacherId", "==", currentUser?.uid)
       );
-      const studentsSnapshot = await getDocs(studentsQuery);
-
-      const studentsList = studentsSnapshot.docs.map((doc) => {
+      const snapshot = await getDocs(q);
+      const list = snapshot.docs.map((doc) => {
         const data = doc.data();
         return {
           id: doc.id,
@@ -239,8 +239,7 @@ export default function AttendancePage() {
           periods: data.periods || [],
         };
       });
-
-      setStudents(studentsList);
+      setStudents(list);
       setLoading(false);
     } catch (error) {
       console.error("Error fetching students:", error);
@@ -249,12 +248,12 @@ export default function AttendancePage() {
     }
   };
 
-  const initializeAttendanceRecords = (studentList: Student[]) => {
-    const records = studentList.map((student) => ({
-      studentId: student.id, // keep studentId the same
+  const initializeAttendanceRecords = (list: Student[]) => {
+    const records = list.map((student) => ({
+      studentId: student.id,
       studentName: student.name,
       status: "present" as const,
-      periodId: selectedPeriodId, // NEW: tag record with current period
+      periodId: selectedPeriodId,
     }));
     setAttendanceRecords(records);
     setHasUnsavedChanges(false);
@@ -262,24 +261,55 @@ export default function AttendancePage() {
 
   const loadExistingAttendance = async () => {
     if (!selectedPeriodId || !selectedDate || !currentUser) return;
-
     try {
       const dateStr = format(selectedDate, "yyyy-MM-dd");
-      const sessionId = `${currentUser.uid}_${selectedPeriodId}_${dateStr}`;
 
-      const sessionDoc = await getDoc(doc(db, "attendance", sessionId));
+      // 🔁 Query by fields (avoids rules failure on non-existent doc IDs)
+      const q = query(
+        collection(db, "attendance"),
+        where("teacherId", "==", currentUser.uid),
+        where("periodId", "==", selectedPeriodId),
+        where("date", "==", dateStr)
+      );
+      const snap = await getDocs(q);
 
-      if (sessionDoc.exists()) {
-        const data = sessionDoc.data() as AttendanceSession;
-        setAttendanceRecords(data.records);
-        setExistingSessionId(sessionId);
+      if (!snap.empty) {
+        const docSnap = snap.docs[0];
+        const data = docSnap.data() as AttendanceSession;
+
+        // Normalize periodId on loaded records
+        const withPeriodTag = (data.records || []).map((r) => ({
+          ...r,
+          periodId: r.periodId ?? data.periodId,
+        }));
+
+        // 🔧 Merge in any students from the current roster who don't have a record yet
+        const hasRecord = new Map(
+          withPeriodTag
+            .filter((r) => r.periodId === selectedPeriodId)
+            .map((r) => [r.studentId, true])
+        );
+
+        const merged = [
+          ...withPeriodTag,
+          ...filteredStudents
+            .filter((s) => !hasRecord.get(s.id))
+            .map((s) => ({
+              studentId: s.id,
+              studentName: s.name,
+              status: "present" as const,
+              periodId: selectedPeriodId,
+            })),
+        ];
+
+        setAttendanceRecords(merged);
+        setExistingSessionId(docSnap.id);
         setHasUnsavedChanges(false);
         toast.success("Loaded existing attendance for this date");
       } else {
         setExistingSessionId(null);
-        if (filteredStudents.length > 0) {
+        if (filteredStudents.length > 0)
           initializeAttendanceRecords(filteredStudents);
-        }
       }
     } catch (error) {
       console.error("Error loading attendance:", error);
@@ -293,7 +323,6 @@ export default function AttendancePage() {
   ) => {
     setAttendanceRecords((prev) =>
       prev.map((record) =>
-        // match both student and current period so periods don’t clash
         record.studentId === studentId && record.periodId === selectedPeriodId
           ? { ...record, status }
           : record
@@ -302,20 +331,25 @@ export default function AttendancePage() {
     setHasUnsavedChanges(true);
   };
 
+  // ✅ Only affect current period’s records
   const markAllAsPresent = () => {
     setAttendanceRecords((prev) =>
-      prev.map((record) => ({ ...record, status: "present" as const }))
+      prev.map((record) =>
+        record.periodId === selectedPeriodId
+          ? { ...record, status: "present" as const }
+          : record
+      )
     );
     setHasUnsavedChanges(true);
     toast.success("All students marked as present");
   };
 
+  // ✅ Save only current period’s records
   const saveAttendance = async () => {
     if (!selectedPeriodId || !selectedDate || !currentUser) {
       toast.error("Please select a period and date");
       return;
     }
-
     if (attendanceRecords.length === 0) {
       toast.error("No students to save attendance for");
       return;
@@ -325,20 +359,21 @@ export default function AttendancePage() {
     try {
       const dateStr = format(selectedDate, "yyyy-MM-dd");
       const sessionId = `${currentUser.uid}_${selectedPeriodId}_${dateStr}`;
-      const selectedPeriod = periods.find((p) => p.id === selectedPeriodId);
+      const period = periods.find((p) => p.id === selectedPeriodId);
 
       const attendanceSession: AttendanceSession = {
         id: sessionId,
         teacherId: currentUser.uid,
         periodId: selectedPeriodId,
-        periodName: selectedPeriod?.name || "Unknown Period",
+        periodName: period?.name || "Unknown Period",
         date: dateStr,
-        records: attendanceRecords,
+        records: attendanceRecords.filter(
+          (r) => r.periodId === selectedPeriodId
+        ),
         lastModified: new Date(),
       };
 
       await setDoc(doc(db, "attendance", sessionId), attendanceSession);
-
       setExistingSessionId(sessionId);
       setHasUnsavedChanges(false);
       toast.success("Attendance saved successfully");
@@ -350,67 +385,71 @@ export default function AttendancePage() {
     }
   };
 
-  // ---- NEW helpers for first/last name sorting ----
-  const getFirstName = (fullName: string) => {
-    const parts = (fullName || "").trim().split(/\s+/);
-    return (parts[0] || "").toLowerCase();
-  };
-
-  const getLastName = (fullName: string) => {
-    const parts = (fullName || "").trim().split(/\s+/);
-    return (parts.length > 1 ? parts[parts.length - 1] : "").toLowerCase();
+  const getFirstName = (n: string) =>
+    (n || "").trim().split(/\s+/)[0]?.toLowerCase() || "";
+  const getLastName = (n: string) => {
+    const parts = (n || "").trim().split(/\s+/);
+    return parts.length > 1 ? parts[parts.length - 1].toLowerCase() : "";
   };
 
   const getSortedStudents = () => {
-    const studentsWithRecords = filteredStudents.map((student) => {
-      // find the record for this student in the CURRENT period only
+    const list = filteredStudents.map((student) => {
       const record = attendanceRecords.find(
         (r) => r.studentId === student.id && r.periodId === selectedPeriodId
       );
-      return {
-        ...student,
-        attendanceStatus: record?.status || "present",
-      };
+      return { ...student, attendanceStatus: record?.status || "present" };
     });
 
-    const sorted = [...studentsWithRecords].sort((a, b) => {
+    return [...list].sort((a, b) => {
+      const fa = getFirstName(a.name),
+        fb = getFirstName(b.name),
+        la = getLastName(a.name),
+        lb = getLastName(b.name);
       if (sortMode === "first") {
-        const fa = getFirstName(a.name);
-        const fb = getFirstName(b.name);
         if (fa !== fb) return fa.localeCompare(fb);
-        // tie-breaker by last name then studentId
-        const la = getLastName(a.name);
-        const lb = getLastName(b.name);
         if (la !== lb) return la.localeCompare(lb);
-        return (a.studentId || "")
-          .toLowerCase()
-          .localeCompare((b.studentId || "").toLowerCase());
       } else {
-        const la = getLastName(a.name);
-        const lb = getLastName(b.name);
         if (la !== lb) return la.localeCompare(lb);
-        // tie-breaker by first name then studentId
-        const fa = getFirstName(a.name);
-        const fb = getFirstName(b.name);
         if (fa !== fb) return fa.localeCompare(fb);
-        return (a.studentId || "")
-          .toLowerCase()
-          .localeCompare((b.studentId || "").toLowerCase());
       }
+      return (a.studentId || "").localeCompare(b.studentId || "");
     });
-
-    return sorted;
   };
 
+  // ---- Totals must reflect only the visible roster in the current period ----
+  const getStatusFor = (studentId: string) => {
+    const rec = attendanceRecords.find(
+      (r) => r.studentId === studentId && r.periodId === selectedPeriodId
+    );
+    return rec?.status ?? "present";
+  };
+
+  const presentCount = useMemo(
+    () =>
+      filteredStudents.filter((s) => getStatusFor(s.id) === "present").length,
+    [filteredStudents, attendanceRecords, selectedPeriodId]
+  );
+  const tardyCount = useMemo(
+    () => filteredStudents.filter((s) => getStatusFor(s.id) === "tardy").length,
+    [filteredStudents, attendanceRecords, selectedPeriodId]
+  );
+  const absentCount = useMemo(
+    () =>
+      filteredStudents.filter((s) => getStatusFor(s.id) === "absent").length,
+    [filteredStudents, attendanceRecords, selectedPeriodId]
+  );
+
+  // -------------------
+  // UI rendering section (unchanged except summary filtering)
+  // -------------------
+
   const generateAnalytics = (records: any[]) => {
-    // Summary statistics
     const summary = {
       present: records.filter((r) => r.status === "present").length,
       absent: records.filter((r) => r.status === "absent").length,
       tardy: records.filter((r) => r.status === "tardy").length,
     };
 
-    // Daily trends - group by date
     const dailyData = records.reduce((acc, record) => {
       const date = record.date;
       if (!acc[date]) {
@@ -431,7 +470,6 @@ export default function AttendancePage() {
         ),
       }));
 
-    // Student statistics
     const studentData = records.reduce((acc, record) => {
       const studentId = record.studentId;
       if (!acc[studentId]) {
@@ -458,7 +496,6 @@ export default function AttendancePage() {
       }))
       .sort((a: any, b: any) => b.attendanceRate - a.attendanceRate);
 
-    // Period statistics
     const periodData = records.reduce((acc, record) => {
       const periodName = record.periodName;
       if (!acc[periodName]) {
@@ -491,7 +528,6 @@ export default function AttendancePage() {
       const startDateStr = format(reportStartDate, "yyyy-MM-dd");
       const endDateStr = format(reportEndDate, "yyyy-MM-dd");
 
-      // Query attendance records
       const attendanceQuery = query(
         collection(db, "attendance"),
         where("teacherId", "==", currentUser.uid)
@@ -500,47 +536,54 @@ export default function AttendancePage() {
 
       let reportRecords: any[] = [];
 
-      attendanceSnapshot.docs.forEach((doc) => {
-        const data = doc.data() as AttendanceSession;
+      attendanceSnapshot.docs.forEach((snap) => {
+        const data = snap.data() as AttendanceSession;
 
-        // Filter by date range
-        if (data.date >= startDateStr && data.date <= endDateStr) {
-          // Filter by period if specified
-          if (reportPeriodId === "all" || data.periodId === reportPeriodId) {
-            data.records.forEach((record) => {
-              // Filter by student if specified
-              if (
-                reportStudentId === "all" ||
-                record.studentId === reportStudentId
-              ) {
-                // Find the actual student ID from the students list
-                const student = students.find((s) => s.id === record.studentId);
-                const actualStudentId = student?.studentId || record.studentId;
+        // date range
+        if (data.date < startDateStr || data.date > endDateStr) return;
 
-                reportRecords.push({
-                  date: data.date,
-                  periodName: data.periodName,
-                  studentName: record.studentName,
-                  studentId: actualStudentId,
-                  status: record.status,
-                });
-              }
-            });
-          }
-        }
+        (data.records || []).forEach((record) => {
+          // record-level period (fallback to session for legacy rows)
+          const recPeriodId = record.periodId ?? data.periodId;
+
+          // current filters
+          const periodOk =
+            reportPeriodId === "all" || recPeriodId === reportPeriodId;
+          const studentOk =
+            reportStudentId === "all" || record.studentId === reportStudentId;
+
+          // ✅ NEW: only include if this student is actually in the selected period roster
+          const studentObj = students.find((s) => s.id === record.studentId);
+          const isInSelectedPeriod =
+            reportPeriodId === "all" ||
+            (studentObj?.periods || []).some((p) => p.id === reportPeriodId);
+
+          if (!(periodOk && studentOk && isInSelectedPeriod)) return;
+
+          const periodName =
+            periods.find((p) => p.id === recPeriodId)?.name ?? data.periodName;
+
+          const student = students.find((s) => s.id === record.studentId);
+          const actualStudentId = student?.studentId || record.studentId;
+
+          reportRecords.push({
+            date: data.date,
+            periodName,
+            studentName: record.studentName,
+            studentId: actualStudentId,
+            status: record.status,
+          });
+        });
       });
 
-      // Sort by date, then by student name
-      reportRecords.sort((a, b) => {
-        if (a.date !== b.date) {
-          return a.date.localeCompare(b.date);
-        }
-        return a.studentName.localeCompare(b.studentName);
-      });
+      reportRecords.sort((a, b) =>
+        a.date === b.date
+          ? a.studentName.localeCompare(b.studentName)
+          : a.date.localeCompare(b.date)
+      );
 
       setReportData(reportRecords);
 
-      // Generate analytics data
       const analytics = generateAnalytics(reportRecords);
       setAnalyticsData(analytics);
 
@@ -553,7 +596,6 @@ export default function AttendancePage() {
     }
   };
 
-  // Show loading while checking subscription
   if (subscriptionLoading) {
     return (
       <ProtectedRoute>
@@ -564,7 +606,6 @@ export default function AttendancePage() {
     );
   }
 
-  // Show no access if user doesn't have subscription
   if (!hasAccess) {
     return (
       <ProtectedRoute>
@@ -644,7 +685,6 @@ export default function AttendancePage() {
                       </SelectTrigger>
                       <SelectContent>
                         {(() => {
-                          // Filter periods by selected school year if any
                           let filteredPeriods = periods;
                           if (selectedSchoolYearId !== "all") {
                             const selectedSchoolYear = schoolYears.find(
@@ -659,7 +699,6 @@ export default function AttendancePage() {
                             }
                           }
 
-                          // Group periods by school year (if showing all school years)
                           if (selectedSchoolYearId === "all") {
                             const groupedPeriods = filteredPeriods.reduce(
                               (acc, period) => {
@@ -883,15 +922,11 @@ export default function AttendancePage() {
                       </Table>
                     </div>
 
-                    {/* Summary */}
+                    {/* Summary (current period + visible roster only) */}
                     <div className="grid grid-cols-3 gap-4 pt-4 border-t">
                       <div className="text-center">
                         <div className="text-2xl font-bold text-green-600">
-                          {
-                            attendanceRecords.filter(
-                              (r) => r.status === "present"
-                            ).length
-                          }
+                          {presentCount}
                         </div>
                         <div className="text-sm text-muted-foreground">
                           Present
@@ -899,11 +934,7 @@ export default function AttendancePage() {
                       </div>
                       <div className="text-center">
                         <div className="text-2xl font-bold text-yellow-600">
-                          {
-                            attendanceRecords.filter(
-                              (r) => r.status === "tardy"
-                            ).length
-                          }
+                          {tardyCount}
                         </div>
                         <div className="text-sm text-muted-foreground">
                           Tardy
@@ -911,11 +942,7 @@ export default function AttendancePage() {
                       </div>
                       <div className="text-center">
                         <div className="text-2xl font-bold text-red-600">
-                          {
-                            attendanceRecords.filter(
-                              (r) => r.status === "absent"
-                            ).length
-                          }
+                          {absentCount}
                         </div>
                         <div className="text-sm text-muted-foreground">
                           Absent
@@ -1008,7 +1035,7 @@ export default function AttendancePage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">All Students</SelectItem>
-                        {students.map((student) => (
+                        {reportStudents.map((student) => (
                           <SelectItem key={student.id} value={student.id}>
                             {student.name}
                           </SelectItem>
@@ -1043,7 +1070,6 @@ export default function AttendancePage() {
                   </CardHeader>
                   <CardContent>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                      {/* Summary Cards */}
                       <div className="text-center">
                         <div className="text-3xl font-bold text-green-600">
                           {analyticsData.summary.present}
@@ -1096,7 +1122,6 @@ export default function AttendancePage() {
                         </div>
                       </div>
 
-                      {/* Pie Chart */}
                       <div className="flex justify-center">
                         <ResponsiveContainer width={120} height={120}>
                           <PieChart>

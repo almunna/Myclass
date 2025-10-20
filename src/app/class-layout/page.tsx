@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   RoomLayout,
   RoomLayoutData,
@@ -50,15 +50,13 @@ import {
 import { getAuth } from "firebase/auth";
 
 /* ---------------------------------- LS ---------------------------------- */
-/* Kept the constants & function names the same, but re-implemented them to use Firestore under the hood. */
-
 const LS_LAYOUTS_KEY = "mcl_class_layouts";
-const LS_ASSIGN_PREFIX = "mcl_assign_"; // kept for key shape; not used for localStorage anymore
+const LS_ASSIGN_PREFIX = "mcl_assign_";
 
 const layoutIdFromName = (name?: string) =>
   (name || "New Layout").trim().toLowerCase().replace(/\s+/g, "-");
 
-/* === Firestore sanitize helpers (tiny, safe, and only used on writes) === */
+/* === Helpers === */
 const omitUndefined = <T extends Record<string, any>>(obj: T): T => {
   const out: any = {};
   for (const k in obj) if (obj[k] !== undefined) out[k] = obj[k];
@@ -83,72 +81,73 @@ async function loadLayouts(uid?: string): Promise<RoomLayoutData[]> {
   const snap = await getDocs(query(colRef, orderBy("updatedAt", "desc")));
   return snap.docs.map((d) => {
     const data = d.data() as RoomLayoutData;
-    // Ensure name exists (fallback to id)
     return { ...data, name: data.name ?? d.id };
   });
 }
 
-// Kept name/signature; now no-op for Firestore listing, we rely on loadLayouts()
-function saveLayouts(_list: RoomLayoutData[]) {
-  /* no-op: Firestore is source of truth */
+// No-op kept for compatibility
+function saveLayouts(_list: RoomLayoutData[]) {}
+
+/** ---------- Per-period arrangements storage ---------- */
+type ArrangementDoc = {
+  assignments?: Record<string, string>;
+  colors?: Record<string, string>;
+  updatedAt?: any;
+  createdAt?: any;
+};
+
+const periodKeyOf = (periodId?: string) =>
+  !periodId || periodId === "all" ? "all" : periodId;
+
+/** Load assignments+colors for a layout+period */
+async function loadAssignments(
+  layoutName?: string,
+  uid?: string,
+  periodId?: string
+): Promise<{
+  assignments: Record<string, string>;
+  colors: Record<string, string>;
+}> {
+  if (!uid || !layoutName) return { assignments: {}, colors: {} };
+  const id = layoutIdFromName(layoutName);
+  const pk = periodKeyOf(periodId);
+  const ref = doc(db, "users", uid, "roomLayouts", id, "arrangements", pk);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return { assignments: {}, colors: {} };
+  const data = snap.data() as ArrangementDoc;
+  return {
+    assignments: data.assignments || {},
+    colors: data.colors || {},
+  };
 }
 
-async function loadAssignments(layoutName?: string, uid?: string) {
-  if (!uid || !layoutName) return {};
-  try {
-    const id = layoutIdFromName(layoutName);
-    const ref = doc(db, "users", uid, "roomLayouts", id);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return {};
-    const data = snap.data() as RoomLayoutData;
-    const map: Record<string, string> = {};
-    (data.cells || []).forEach((c: any) => {
-      if (
-        c?.type === "seat" &&
-        typeof c?.studentId === "string" &&
-        c.studentId
-      ) {
-        map[c.id] = c.studentId;
-      }
-    });
-    return map;
-  } catch {
-    return {};
-  }
-}
-
+/** Save assignments+colors for a layout+period */
 async function saveAssignments(
   layoutName?: string,
   a?: Record<string, string>,
-  uid?: string
+  uid?: string,
+  periodId?: string,
+  colors?: Record<string, string>
 ) {
   if (!uid || !layoutName) return;
-  try {
-    // Merge assignments into cells and persist
-    const id = layoutIdFromName(layoutName);
-    const ref = doc(db, "users", uid, "roomLayouts", id);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return;
-    const data = snap.data() as RoomLayoutData;
-
-    // sanitize each cell (no undefined color/studentId)
-    const nextCells = (data.cells || []).map((c: any) => {
-      const base: SeatCell =
-        c.type === "seat" ? { ...c, studentId: a?.[c.id] } : { ...c };
-      return sanitizeCell(base);
-    });
-
+  const id = layoutIdFromName(layoutName);
+  const pk = periodKeyOf(periodId);
+  const ref = doc(db, "users", uid, "roomLayouts", id, "arrangements", pk);
+  const payload: ArrangementDoc = {
+    assignments: a || {},
+    colors: colors || {},
+    updatedAt: serverTimestamp(),
+  };
+  // create if missing while preserving createdAt
+  const existsSnap = await getDoc(ref);
+  if (!existsSnap.exists()) {
     await setDoc(
       ref,
-      {
-        ...omitUndefined(data),
-        cells: nextCells,
-        updatedAt: serverTimestamp(),
-      },
+      { ...payload, createdAt: serverTimestamp() },
       { merge: true }
     );
-  } catch {
-    /* swallow */
+  } else {
+    await setDoc(ref, payload, { merge: true });
   }
 }
 
@@ -236,20 +235,28 @@ export default function ClassLayoutPage() {
   const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
   const [selectedLayoutName, setSelectedLayoutName] = useState<string>("");
   const [layout, setLayout] = useState<RoomLayoutData | null>(null);
+
+  // 🔑 Per-period state
   const [assignments, setAssignments] = useState<Record<string, string>>({});
+  const [periodColors, setPeriodColors] = useState<Record<string, string>>({});
+
   const [layoutModalOpen, setLayoutModalOpen] = useState(false);
 
   /* NEW: track which seat is selected for coloring */
   const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null);
 
   /* Filters/top controls */
-
   const [periodId, setPeriodId] = useState<string>("all");
 
   /* Firestore-driven */
   const [periods, setPeriods] = useState<{ id: string; name: string }[]>([]);
   const [studentPool, setStudentPool] = useState<string[]>([]);
   const [selectedStudent, setSelectedStudent] = useState<string | null>(null);
+
+  /* -------------------- NEW: bleed-through protection refs -------------------- */
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isLoadingArrangement = useRef(false);
+  const lastKeyRef = useRef<string>(""); // tracks last {layout::period} loaded
 
   /* ------------------------------ Effects ------------------------------ */
 
@@ -261,6 +268,7 @@ export default function ClassLayoutPage() {
         setSelectedLayoutName("");
         setLayout(null);
         setAssignments({});
+        setPeriodColors({});
         return;
       }
       try {
@@ -273,27 +281,83 @@ export default function ClassLayoutPage() {
     })();
   }, [currentUser?.uid]);
 
-  // When active layout name changes, pull assignments from Firestore doc cells
+  // When active layout or period changes, pull per-period arrangement (guarded)
   useEffect(() => {
     (async () => {
-      if (!selectedLayoutName) {
+      if (!selectedLayoutName || !currentUser?.uid) {
         setAssignments({});
+        setPeriodColors({});
         return;
       }
-      const map = await loadAssignments(selectedLayoutName, currentUser?.uid);
-      setAssignments(map);
-    })();
-  }, [selectedLayoutName, currentUser?.uid]);
 
-  // Persist assignments changes to Firestore (kept same callsite)
+      // cancel any pending save from previous view
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+
+      const key = `${selectedLayoutName}::${periodId}`;
+      lastKeyRef.current = key;
+      isLoadingArrangement.current = true;
+
+      // optional: clear UI immediately to avoid brief carry-over
+      setAssignments({});
+      setPeriodColors({});
+
+      const { assignments, colors } = await loadAssignments(
+        selectedLayoutName,
+        currentUser.uid,
+        periodId
+      );
+
+      if (lastKeyRef.current === key) {
+        setAssignments(assignments);
+        setPeriodColors(colors);
+      }
+      isLoadingArrangement.current = false;
+    })();
+  }, [selectedLayoutName, periodId, currentUser?.uid]);
+
+  // Persist per-period arrangements (debounced, keyed & guarded)
   useEffect(() => {
     if (!layout?.name || !currentUser?.uid) return;
-    // debounce slightly to avoid thrash if many changes—simple microtask delay
-    const t = setTimeout(() => {
-      saveAssignments(layout.name!, assignments, currentUser.uid);
-    }, 150);
-    return () => clearTimeout(t);
-  }, [layout?.name, assignments, currentUser?.uid]);
+    if (isLoadingArrangement.current) return; // don't save while loading
+
+    // clear old timer
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+
+    const scheduledKey = `${selectedLayoutName}::${periodId}`;
+
+    saveTimeoutRef.current = setTimeout(() => {
+      const currentKey = `${selectedLayoutName}::${periodId}`;
+      if (scheduledKey === currentKey) {
+        saveAssignments(
+          layout.name!,
+          assignments,
+          currentUser.uid,
+          periodId,
+          periodColors
+        );
+      }
+    }, 200);
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
+      }
+    };
+  }, [
+    layout?.name,
+    assignments,
+    periodColors,
+    currentUser?.uid,
+    selectedLayoutName,
+    periodId,
+  ]);
 
   // Periods
   useEffect(() => {
@@ -333,6 +397,14 @@ export default function ClassLayoutPage() {
       if (entries.length === Object.keys(prev).length) return prev;
       const next: Record<string, string> = {};
       for (const [k, v] of entries) next[k] = v;
+      return next;
+    });
+    // also trim colors for removed seats
+    setPeriodColors((prev) => {
+      const next: Record<string, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (validSeatIds.has(k)) next[k] = v;
+      }
       return next;
     });
   }, [layout?.cells]);
@@ -458,11 +530,11 @@ export default function ClassLayoutPage() {
     const cleanName = (name || "New Layout").trim();
     const id = layoutIdFromName(cleanName);
 
-    // Merge assignments into cells and sanitize
+    // Save ONLY structure; do not bake per-period assignments into cells
     const safeCells = data.cells.map((c) => {
-      const withAssign: SeatCell =
-        c.type === "seat" ? { ...c, studentId: assignments[c.id] } : { ...c };
-      return sanitizeCell(withAssign);
+      const base: SeatCell = { ...c };
+      delete (base as any).studentId; // ensure not embedded
+      return sanitizeCell(base);
     });
 
     const payload: RoomLayoutData = omitUndefined({
@@ -491,9 +563,18 @@ export default function ClassLayoutPage() {
     setLayouts(rows);
     setLayout(payload);
     setSelectedLayoutName(cleanName);
-    saveLayouts(rows); // no-op, kept for signature
+    saveLayouts(rows);
     toast.success(`Layout saved as "${cleanName}"`);
     setLayoutModalOpen(false);
+
+    // Persist current period arrangement separately (assignments+colors)
+    await saveAssignments(
+      cleanName,
+      assignments,
+      currentUser.uid,
+      periodId,
+      periodColors
+    );
   };
 
   const deleteLayout = async (name: string) => {
@@ -509,12 +590,12 @@ export default function ClassLayoutPage() {
       setSelectedLayoutName("");
       setLayout(null);
       setAssignments({});
+      setPeriodColors({});
     }
-    // clear any old local cache key (kept behavior shape)
     if (typeof window !== "undefined") {
       localStorage.removeItem(LS_ASSIGN_PREFIX + name);
     }
-    saveLayouts(rows); // no-op
+    saveLayouts(rows);
     toast.success(`Deleted layout "${name}"`);
   };
 
@@ -523,9 +604,16 @@ export default function ClassLayoutPage() {
       setSelectedLayoutName("");
       setLayout(null);
       setAssignments({});
+      setPeriodColors({});
       return;
     }
     if (!currentUser?.uid) return;
+
+    // cancel any pending save tied to previous layout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
 
     const id = layoutIdFromName(name);
     const ref = doc(db, "users", currentUser.uid, "roomLayouts", id);
@@ -534,10 +622,8 @@ export default function ClassLayoutPage() {
     let found: RoomLayoutData | undefined;
     if (snap.exists()) {
       found = snap.data() as RoomLayoutData;
-      // ensure name
       if (!found.name) found.name = name;
     } else {
-      // fallback to in-memory list (rare)
       found = layouts.find((l) => l.name === name);
     }
 
@@ -545,12 +631,24 @@ export default function ClassLayoutPage() {
       setSelectedLayoutName(found.name ?? name);
       setLayout(found);
 
-      // Prefer assignments from Firestore cells; fallback to constructed map
-      const fromFS: Record<string, string> = {};
-      found.cells.forEach((c) => {
-        if (c.type === "seat" && c.studentId) fromFS[c.id] = c.studentId;
-      });
-      setAssignments(fromFS);
+      // Load per-period arrangement (guarded)
+      const key = `${found.name ?? name}::${periodId}`;
+      lastKeyRef.current = key;
+      isLoadingArrangement.current = true;
+
+      setAssignments({});
+      setPeriodColors({});
+
+      const { assignments, colors } = await loadAssignments(
+        found.name ?? name,
+        currentUser.uid,
+        periodId
+      );
+      if (lastKeyRef.current === key) {
+        setAssignments(assignments);
+        setPeriodColors(colors);
+      }
+      isLoadingArrangement.current = false;
     }
   };
 
@@ -574,24 +672,15 @@ export default function ClassLayoutPage() {
       return copy;
     });
 
-    // ✅ Update colors: new seat -> green; previous seat (if any) -> default gray
-    const next = structuredClone(layout) as RoomLayoutData;
+    // ✅ Update colors in per-period map only
+    setPeriodColors((prev) => {
+      const next = { ...prev };
+      const def = getDefaultSeatColor(layout);
+      if (prevSeatId) next[prevSeatId] = def; // reset old seat to default
+      next[cell.id] = "#34d399"; // new seat green
+      return next;
+    });
 
-    // reset previous seat color to default gray
-    if (prevSeatId) {
-      const pIdx = next.cells.findIndex((c) => c.id === prevSeatId);
-      if (pIdx >= 0 && next.cells[pIdx].type === "seat") {
-        next.cells[pIdx].color = getDefaultSeatColor(layout);
-      }
-    }
-
-    // color the new seat green
-    const idx = next.cells.findIndex((c) => c.id === cell.id);
-    if (idx >= 0 && next.cells[idx].type === "seat") {
-      next.cells[idx].color = "#34d399";
-    }
-
-    setLayout(next);
     setSelectedSeatId(cell.id);
     e.preventDefault();
   };
@@ -602,24 +691,19 @@ export default function ClassLayoutPage() {
   const clearAssignments = () => {
     setAssignments({});
     if (layout) {
-      const next = structuredClone(layout) as RoomLayoutData;
-      next.cells = next.cells.map((c) =>
-        c.type === "seat" ? { ...c, color: "rgb(62, 75, 60)" } : c
-      );
-      next.defaultSeatColor = "rgb(62, 75, 60)";
-      setLayout(next);
+      const def = getDefaultSeatColor(layout);
+      const nextColors: Record<string, string> = {};
+      for (const c of layout.cells) {
+        if (c.type === "seat") nextColors[c.id] = def;
+      }
+      setPeriodColors(nextColors);
     }
     toast.message("Cleared all seat assignments and reset seat colors.");
   };
 
   const setSeatColorSelected = (color: string) => {
     if (!layout || !selectedSeatId) return;
-    const next = structuredClone(layout) as RoomLayoutData;
-    const idx = next.cells.findIndex((c) => c.id === selectedSeatId);
-    if (idx >= 0 && next.cells[idx].type === "seat") {
-      next.cells[idx].color = color;
-      setLayout(next);
-    }
+    setPeriodColors((prev) => ({ ...prev, [selectedSeatId]: color }));
   };
 
   const shuffle = (arr: string[]): string[] => {
@@ -662,16 +746,16 @@ export default function ClassLayoutPage() {
 
     setAssignments(nextAssignments);
 
-    // ✅ Color assigned seats green; unassigned seats reset to default gray
+    // ✅ Color assigned seats green; unassigned seats reset to default gray (per period)
     if (layout) {
-      const updated = structuredClone(layout) as RoomLayoutData;
       const def = getDefaultSeatColor(layout);
-      updated.cells = updated.cells.map((c) =>
-        c.type === "seat"
-          ? { ...c, color: nextAssignments[c.id] ? "#34d399" : def }
-          : c
-      );
-      setLayout(updated);
+      const colors: Record<string, string> = {};
+      for (const c of layout.cells) {
+        if (c.type === "seat") {
+          colors[c.id] = nextAssignments[c.id] ? "#34d399" : def;
+        }
+      }
+      setPeriodColors(colors);
     }
 
     toast.success(
@@ -689,15 +773,14 @@ export default function ClassLayoutPage() {
       ([, name]) => name === studentName
     )?.[0];
     if (!seatId) return null;
-    const cell = layout.cells.find((c) => c.id === seatId);
-    return cell?.color ?? layout.defaultSeatColor ?? null;
+    const c = periodColors[seatId];
+    return c ?? layout.defaultSeatColor ?? null;
   };
 
   const selectedSeatColor =
     (layout &&
       selectedSeatId &&
-      (layout.cells.find((c) => c.id === selectedSeatId)?.color ??
-        layout.defaultSeatColor)) ||
+      (periodColors[selectedSeatId] ?? layout.defaultSeatColor)) ||
     layout?.defaultSeatColor ||
     "#3e4b5a";
 
@@ -791,11 +874,12 @@ export default function ClassLayoutPage() {
                     layout &&
                     saveLayoutAs(layout.name ?? "New Layout", {
                       ...layout,
-                      cells: layout.cells.map((c) =>
-                        c.type === "seat"
-                          ? { ...c, studentId: assignments[c.id] }
-                          : c
-                      ),
+                      // do NOT embed per-period assignments on save
+                      cells: layout.cells.map((c) => {
+                        const base: SeatCell = { ...c };
+                        delete (base as any).studentId;
+                        return base;
+                      }),
                     })
                   }
                   className="gap-1"
@@ -952,7 +1036,8 @@ export default function ClassLayoutPage() {
                             ? seatLabelFromDisplayName(name)
                             : "";
 
-                          const seatBg = c.color ?? layout.defaultSeatColor;
+                          const def = getDefaultSeatColor(layout);
+                          const seatBg = periodColors[c.id] ?? def;
 
                           const isSelected = selectedSeatId === c.id;
 
@@ -978,24 +1063,13 @@ export default function ClassLayoutPage() {
                                   delete copy[c.id];
                                   return copy;
                                 });
-                                // reset this seat color back to default gray on unassign
-                                const next = structuredClone(
-                                  layout
-                                ) as RoomLayoutData;
-                                const idx = next.cells.findIndex(
-                                  (x) => x.id === c.id
-                                );
-                                if (
-                                  idx >= 0 &&
-                                  next.cells[idx].type === "seat"
-                                ) {
-                                  next.cells[idx].color =
-                                    getDefaultSeatColor(layout);
-                                  setLayout(next);
-                                }
+                                // reset this seat color back to default gray on unassign (per period)
+                                setPeriodColors((prev) => ({
+                                  ...prev,
+                                  [c.id]: getDefaultSeatColor(layout),
+                                }));
                               }}
                             >
-                              {/* Seat numbers removed to improve name visibility */}
                               {name ? (
                                 <div
                                   draggable
