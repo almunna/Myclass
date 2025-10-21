@@ -204,7 +204,7 @@ export function LoginForm({
               </div>
 
               {/* ✅ Login as Student */}
-              <Button
+              {/* <Button
                 type="button"
                 variant="outline"
                 className="w-full cursor-pointer"
@@ -222,7 +222,7 @@ export function LoginForm({
                 ) : (
                   "Login as Student"
                 )}
-              </Button>
+              </Button> */}
 
               <div className="text-center text-sm">
                 Don&apos;t have an account?{" "}

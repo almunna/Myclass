@@ -120,7 +120,10 @@ type Period = {
   colorBg?: string;
   colorText?: string;
   totalStudents?: number;
-  // (optional times etc.)
+
+  // ⬇️ add these two lines
+  startTime?: string;
+  endTime?: string;
 };
 
 type Attachment = {
@@ -555,7 +558,7 @@ function PlansBody() {
   // View state
   const [today] = useState<Date>(startOfDay(new Date()));
   const [cursor, setCursor] = useState<Date>(startOfDay(new Date()));
-  const [view, setView] = useState<"month" | "week" | "day">("month");
+  const [view, setView] = useState<"month" | "week" | "day">("week");
 
   // Delete confirmation
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -607,7 +610,7 @@ function PlansBody() {
   // Prefs
   const [prefs, setPrefs] = useState<UserPrefs>({
     theme: "light",
-    defaultView: "month",
+    defaultView: "week",
   });
 
   // Editor modal
@@ -663,6 +666,10 @@ function PlansBody() {
     (async () => {
       const prefRef = doc(db, "userPrefs", currentUser.uid);
       const snap = await getDoc(prefRef);
+
+      // ⬇️ Add this line (or the if-block version below)
+      await setDoc(prefRef, { defaultView: "week" }, { merge: true });
+
       if (snap.exists()) {
         const p = snap.data() as UserPrefs;
         setPrefs(p);
@@ -671,6 +678,7 @@ function PlansBody() {
       }
     })();
   }, [currentUser]);
+
   async function syncPeriodColors(
     periodId: string,
     colorBg?: string,
@@ -1720,7 +1728,19 @@ function PlansBody() {
           </SelectContent>
         </Select>
 
-        <Select value={view} onValueChange={(v: any) => setView(v)}>
+        <Select
+          value={view}
+          onValueChange={async (v: "month" | "week" | "day") => {
+            setView(v);
+            if (currentUser) {
+              await setDoc(
+                doc(db, "userPrefs", currentUser.uid),
+                { defaultView: v },
+                { merge: true }
+              );
+            }
+          }}
+        >
           <SelectTrigger className="w-[140px]">
             <SelectValue />
           </SelectTrigger>
@@ -1802,6 +1822,53 @@ function PlansBody() {
       </div>
     </div>
   );
+  // 👇 Add inside PlansBody()
+  const getDayRows = React.useCallback(
+    (dateStr: string) => {
+      // Plans for that date
+      const dayPlans = plansByDate.get(dateStr) || [];
+
+      // Period-attached plans → index by periodId
+      const byPeriod = new Map<string, LessonPlan>();
+      for (const pl of dayPlans) {
+        if (pl.periodId) byPeriod.set(pl.periodId, pl);
+      }
+
+      // One row per period (placeholder if no plan yet)
+      const rows = periods.map((p) => ({
+        period: p,
+        plan: byPeriod.get(p.id) || null,
+        isPlaceholder: !byPeriod.has(p.id),
+      }));
+
+      // “Events” (no periodId) shown above period rows
+      const events = dayPlans.filter((pl) => !pl.periodId);
+
+      return { events, rows };
+    },
+    [plansByDate, periods]
+  );
+
+  function openNewPlanEditor(dateStr: string, period: Period) {
+    if (!currentUser || !selectedYearId) {
+      toast({ title: "Select a School Year first", variant: "destructive" });
+      return;
+    }
+    const draft: LessonPlan = {
+      // no id yet → it’ll be assigned on save
+      teacherId: currentUser.uid,
+      schoolYearId: selectedYearId,
+      periodId: period.id,
+      periodName: period.name,
+      date: dateStr,
+      attachments: [],
+      colorBg: period.colorBg,
+      colorText: period.colorText,
+      meta: {},
+    };
+    setEditingPlan(draft);
+    setEditorOpen(true);
+  }
 
   // One day cell
   function renderCell(d: Date) {
@@ -1810,6 +1877,8 @@ function PlansBody() {
     const isToday = isSameDay(d, today);
     const dayPlans = plansByDate.get(dateStr) || [];
 
+    const { events, rows } = getDayRows(dateStr);
+
     return (
       <div
         key={dateStr}
@@ -1817,13 +1886,13 @@ function PlansBody() {
           "border p-2 min-h-[140px] relative group",
           !inMonth && "bg-muted/30",
           isToday && "ring-2 ring-primary",
-          isNonSchool(dateStr) && "bg-red-100 dark:bg-amber-900/20" // non-school day tint
+          isNonSchool(dateStr) && "bg-red-100 dark:bg-amber-900/20"
         )}
         onContextMenu={(e) => onCellContext(e, dateStr)}
       >
+        {/* header with date + actions (unchanged) */}
         <div className="flex items-center justify-between">
           <div className="text-xs font-medium opacity-70">{format(d, "d")}</div>
-
           <div className="flex items-center gap-1">
             <Button
               variant="ghost"
@@ -1839,6 +1908,7 @@ function PlansBody() {
               <Plus className="h-4 w-4" />
             </Button>
 
+            {/* your More (...) menu stays the same */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-6 w-6">
@@ -1856,7 +1926,6 @@ function PlansBody() {
                 >
                   Non-school day
                 </DropdownMenuCheckboxItem>
-
                 <DropdownMenuSeparator />
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1864,29 +1933,15 @@ function PlansBody() {
         </div>
 
         <div className="mt-2 space-y-2">
-          {dayPlans.length ? (
-            dayPlans.map((plan) => {
+          {/* 1) Events (no period) */}
+          {events.length > 0 &&
+            events.map((plan) => {
               const previewHit =
                 colorPreview && colorPreview.planId === plan.id
                   ? colorPreview
                   : null;
-              const period = periodMap.get(plan.periodId);
-              const bg =
-                previewHit?.colorBg ??
-                plan.colorBg ??
-                period?.colorBg ??
-                "#e6f0ff";
-              const tx =
-                previewHit?.colorText ??
-                plan.colorText ??
-                period?.colorText ??
-                "#1e3a8a";
-
-              const headerPieces: string[] = [];
-              const resolvedPeriodName = period?.name ?? plan.periodName;
-              if (resolvedPeriodName) headerPieces.push(resolvedPeriodName);
-              if (typeof period?.totalStudents === "number")
-                headerPieces.push(`${period.totalStudents} students`);
+              const bg = previewHit?.colorBg ?? plan.colorBg ?? "#e6f0ff";
+              const tx = previewHit?.colorText ?? plan.colorText ?? "#1e3a8a";
 
               return (
                 <div
@@ -1905,16 +1960,12 @@ function PlansBody() {
                     style={{ background: bg, color: tx }}
                   >
                     <span className="truncate">
-                      {headerPieces.length
-                        ? headerPieces.join(" • ") + " — "
-                        : ""}
                       {plan.name || "Untitled"}
                       {plan.startTime && plan.endTime
                         ? ` · ${plan.startTime}–${plan.endTime}`
                         : ""}
                     </span>
                   </div>
-
                   <div className="p-2 space-y-1 text-xs">
                     {plan.topic && <Line label="Topic" value={plan.topic} />}
                     {plan.objective && (
@@ -1933,10 +1984,9 @@ function PlansBody() {
                     {plan.standards && (
                       <Line label="Standards" value={plan.standards} />
                     )}
-
                     {!!plan.attachments?.length && (
                       <div className="flex flex-wrap gap-2 mt-1">
-                        {plan.attachments!.map((a) => (
+                        {plan.attachments.map((a) => (
                           <a
                             key={a.storagePath}
                             href={a.url}
@@ -1953,26 +2003,157 @@ function PlansBody() {
                         ))}
                       </div>
                     )}
-
-                    {!plan.topic &&
-                      !plan.objective &&
-                      !plan.resources &&
-                      !plan.assignments &&
-                      !plan.homework &&
-                      !plan.notes &&
-                      !plan.standards &&
-                      !plan.attachments?.length && (
-                        <div className="text-muted-foreground italic">
-                          Click to add details…
-                        </div>
-                      )}
                   </div>
                 </div>
               );
-            })
-          ) : (
+            })}
+
+          {/* 2) One row per period (plan or placeholder) */}
+          {!isNonSchool(dateStr) &&
+            rows.map(({ period, plan, isPlaceholder }) => {
+              const bg = (plan?.colorBg ??
+                period.colorBg ??
+                "#e6f0ff") as string;
+              const tx = (plan?.colorText ??
+                period.colorText ??
+                "#1e3a8a") as string;
+
+              if (!isPlaceholder && plan) {
+                // existing plan (keep your original plan card for period-attached)
+                const previewHit =
+                  colorPreview && colorPreview.planId === plan.id
+                    ? colorPreview
+                    : null;
+                const headerBg = previewHit?.colorBg ?? bg;
+                const headerTx = previewHit?.colorText ?? tx;
+
+                const headerPieces: string[] = [];
+                if (period?.name) headerPieces.push(period.name);
+                // ⬇️ add this line
+                if (period?.startTime && period?.endTime)
+                  headerPieces.push(`${period.startTime}–${period.endTime}`);
+                if (typeof period?.totalStudents === "number")
+                  headerPieces.push(`${period.totalStudents} students`);
+
+                return (
+                  <div
+                    key={plan.id}
+                    onDoubleClick={() => openEditor(plan)}
+                    onClick={() => openEditor(plan)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onCellContext(e, dateStr, plan);
+                    }}
+                    className="rounded-md overflow-hidden border cursor-pointer bg-card text-card-foreground border-border"
+                  >
+                    <div
+                      className="px-2 py-1 text-xs font-semibold flex items-center justify-between"
+                      style={{ background: headerBg, color: headerTx }}
+                    >
+                      <span className="truncate">
+                        {headerPieces.length
+                          ? headerPieces.join(" • ") + " — "
+                          : ""}
+                        {plan.name || "Untitled"}
+                        {plan.startTime && plan.endTime
+                          ? ` · ${plan.startTime}–${plan.endTime}`
+                          : ""}
+                      </span>
+                    </div>
+                    <div className="p-2 space-y-1 text-xs">
+                      {plan.topic && <Line label="Topic" value={plan.topic} />}
+                      {plan.objective && (
+                        <Line label="Objective" value={plan.objective} />
+                      )}
+                      {plan.resources && (
+                        <Line label="Resources" value={plan.resources} />
+                      )}
+                      {plan.assignments && (
+                        <Line label="Assignments" value={plan.assignments} />
+                      )}
+                      {plan.homework && (
+                        <Line label="Homework" value={plan.homework} />
+                      )}
+                      {plan.notes && <Line label="Notes" value={plan.notes} />}
+                      {plan.standards && (
+                        <Line label="Standards" value={plan.standards} />
+                      )}
+                      {!!plan.attachments?.length && (
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {plan.attachments.map((a) => (
+                            <a
+                              key={a.storagePath}
+                              href={a.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 underline text-primary hover:text-primary/80"
+                              title={a.name}
+                            >
+                              <Paperclip className="h-3 w-3" />
+                              <span className="truncate max-w-[120px]">
+                                {a.name}
+                              </span>
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                      {!plan.topic &&
+                        !plan.objective &&
+                        !plan.resources &&
+                        !plan.assignments &&
+                        !plan.homework &&
+                        !plan.notes &&
+                        !plan.standards &&
+                        !plan.attachments?.length && (
+                          <div className="text-muted-foreground italic">
+                            Click to add details…
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                );
+              }
+
+              // Placeholder row for this period (no plan yet)
+              // Placeholder row for this period (no plan yet) — click opens full editor
+              return (
+                <div
+                  key={`ph-${period.id}`}
+                  className="rounded-md overflow-hidden border bg-card text-card-foreground border-dashed cursor-pointer hover:border-primary/60"
+                  onClick={() => openNewPlanEditor(dateStr, period)}
+                  onContextMenu={(e) => {
+                    // prevent the day menu from taking over when we intend to create
+                    e.preventDefault();
+                    openNewPlanEditor(dateStr, period);
+                  }}
+                  title="Create a plan for this period"
+                >
+                  <div
+                    className="px-2 py-1 text-xs font-semibold"
+                    style={{ background: bg, color: tx }}
+                  >
+                    <span className="truncate">
+                      {period.name}
+                      {period.startTime && period.endTime
+                        ? ` • ${period.startTime}–${period.endTime}`
+                        : ""}
+                      {typeof period.totalStudents === "number"
+                        ? ` • ${period.totalStudents} students`
+                        : ""}
+                    </span>
+                  </div>
+                  <div className="p-2 text-xs text-muted-foreground italic">
+                    No plan yet
+                  </div>
+                </div>
+              );
+            })}
+
+          {/* For non-school days, keep your empty message */}
+          {isNonSchool(dateStr) && events.length === 0 && (
             <div className="text-muted-foreground italic">
-              Click + to add a plan…
+              Non-school day — use + to add an Event
             </div>
           )}
         </div>

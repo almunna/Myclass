@@ -144,12 +144,23 @@ export default function AttendancePage() {
     [attendanceRecords, selectedPeriodId]
   );
 
+  const nameCollator = useMemo(
+    () => new Intl.Collator(undefined, { sensitivity: "base", numeric: true }),
+    []
+  );
   const reportStudents = useMemo(() => {
-    if (reportPeriodId === "all") return students;
-    return students.filter((s) =>
-      (s.periods || []).some((p) => p.id === reportPeriodId)
+    const base =
+      reportPeriodId === "all"
+        ? students
+        : students.filter((s) =>
+            (s.periods || []).some((p) => p.id === reportPeriodId)
+          );
+
+    // sort A→Z by name
+    return [...base].sort((a, b) =>
+      nameCollator.compare(a.name || "", b.name || "")
     );
-  }, [students, reportPeriodId]);
+  }, [students, reportPeriodId, nameCollator]);
 
   useEffect(() => {
     if (currentUser) {
@@ -175,7 +186,7 @@ export default function AttendancePage() {
     if (selectedPeriodId && selectedDate) {
       loadExistingAttendance();
     }
-  }, [selectedPeriodId, selectedDate]);
+  }, [selectedPeriodId, selectedDate]); // NOTE: no filteredStudents dependency
 
   const fetchPeriods = async () => {
     try {
@@ -259,19 +270,24 @@ export default function AttendancePage() {
     setHasUnsavedChanges(false);
   };
 
+  // ✅ Derive roster from `students` (not `filteredStudents`) to avoid race
   const loadExistingAttendance = async () => {
     if (!selectedPeriodId || !selectedDate || !currentUser) return;
     try {
       const dateStr = format(selectedDate, "yyyy-MM-dd");
 
-      // 🔁 Query by fields (avoids rules failure on non-existent doc IDs)
-      const q = query(
+      // Build current roster directly from `students`
+      const roster = students.filter((s) =>
+        (s.periods || []).some((p) => p.id === selectedPeriodId)
+      );
+
+      const qy = query(
         collection(db, "attendance"),
         where("teacherId", "==", currentUser.uid),
         where("periodId", "==", selectedPeriodId),
         where("date", "==", dateStr)
       );
-      const snap = await getDocs(q);
+      const snap = await getDocs(qy);
 
       if (!snap.empty) {
         const docSnap = snap.docs[0];
@@ -283,7 +299,7 @@ export default function AttendancePage() {
           periodId: r.periodId ?? data.periodId,
         }));
 
-        // 🔧 Merge in any students from the current roster who don't have a record yet
+        // Merge roster students missing a record
         const hasRecord = new Map(
           withPeriodTag
             .filter((r) => r.periodId === selectedPeriodId)
@@ -292,7 +308,7 @@ export default function AttendancePage() {
 
         const merged = [
           ...withPeriodTag,
-          ...filteredStudents
+          ...roster
             .filter((s) => !hasRecord.get(s.id))
             .map((s) => ({
               studentId: s.id,
@@ -308,8 +324,7 @@ export default function AttendancePage() {
         toast.success("Loaded existing attendance for this date");
       } else {
         setExistingSessionId(null);
-        if (filteredStudents.length > 0)
-          initializeAttendanceRecords(filteredStudents);
+        if (roster.length > 0) initializeAttendanceRecords(roster);
       }
     } catch (error) {
       console.error("Error loading attendance:", error);
@@ -440,7 +455,7 @@ export default function AttendancePage() {
   );
 
   // -------------------
-  // UI rendering section (unchanged except summary filtering)
+  // Analytics helpers
   // -------------------
 
   const generateAnalytics = (records: any[]) => {
@@ -539,32 +554,40 @@ export default function AttendancePage() {
       attendanceSnapshot.docs.forEach((snap) => {
         const data = snap.data() as AttendanceSession;
 
-        // date range
+        // date range guard
         if (data.date < startDateStr || data.date > endDateStr) return;
 
         (data.records || []).forEach((record) => {
-          // record-level period (fallback to session for legacy rows)
+          // period on the record (fallback to session for legacy rows)
           const recPeriodId = record.periodId ?? data.periodId;
 
-          // current filters
+          // chosen period filter
           const periodOk =
             reportPeriodId === "all" || recPeriodId === reportPeriodId;
+
+          // chosen student filter
           const studentOk =
             reportStudentId === "all" || record.studentId === reportStudentId;
 
-          // ✅ NEW: only include if this student is actually in the selected period roster
+          // find the student (current roster data)
           const studentObj = students.find((s) => s.id === record.studentId);
-          const isInSelectedPeriod =
-            reportPeriodId === "all" ||
-            (studentObj?.periods || []).some((p) => p.id === reportPeriodId);
 
-          if (!(periodOk && studentOk && isInSelectedPeriod)) return;
+          // ✅ KEY FIX:
+          // If Period = All, verify the student is enrolled in *this record’s* period.
+          // If a specific period is selected, verify against that specific period.
+          const targetPeriodId =
+            reportPeriodId === "all" ? recPeriodId : reportPeriodId;
+
+          const enrolledInTarget =
+            !!studentObj &&
+            (studentObj.periods || []).some((p) => p.id === targetPeriodId);
+
+          if (!(periodOk && studentOk && enrolledInTarget)) return;
 
           const periodName =
             periods.find((p) => p.id === recPeriodId)?.name ?? data.periodName;
 
-          const student = students.find((s) => s.id === record.studentId);
-          const actualStudentId = student?.studentId || record.studentId;
+          const actualStudentId = studentObj?.studentId || record.studentId;
 
           reportRecords.push({
             date: data.date,
@@ -616,6 +639,9 @@ export default function AttendancePage() {
       </ProtectedRoute>
     );
   }
+
+  // Key to force a clean remount when period/date changes (prevents stale closures)
+  const viewKey = `${selectedPeriodId}::${format(selectedDate, "yyyy-MM-dd")}`;
 
   return (
     <ProtectedRoute>
@@ -759,7 +785,7 @@ export default function AttendancePage() {
 
             {/* Attendance Taking Interface */}
             {selectedPeriodId && filteredStudents.length > 0 && (
-              <Card>
+              <Card key={viewKey}>
                 <CardHeader>
                   <div className="flex justify-between items-center">
                     <CardTitle>

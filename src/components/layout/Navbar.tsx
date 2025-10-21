@@ -122,7 +122,7 @@ export function Navbar() {
     },
     {
       name: "Account",
-      href: "/account",
+      href: "/subscription",
       icon: <Image src={AccountIcon} alt="Account" width={20} height={20} />,
     },
   ];
