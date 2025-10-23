@@ -14,6 +14,7 @@ import {
   endOfWeek,
   format,
   isAfter,
+  parse,
   isSameDay,
   isSameMonth,
   isWithinInterval,
@@ -174,6 +175,16 @@ type UserPrefs = {
 
 // ---------------- Helpers ----------------
 const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+// Convert "HH:mm" to "h:mm a" (e.g., "13:30" → "1:30 PM")
+function to12Hour(time?: string) {
+  if (!time) return "";
+  try {
+    return format(parse(time, "HH:mm", new Date()), "h:mm a");
+  } catch {
+    return time;
+  }
+}
+
 const iso = (d: Date) => format(d, "yyyy-MM-dd");
 const onlyMF = (d: Date) => {
   const w = d.getDay(); // 0 Sun ... 6 Sat
@@ -2019,7 +2030,9 @@ function PlansBody() {
                     <span className="truncate">
                       {plan.name}
                       {plan.startTime && plan.endTime
-                        ? ` · ${plan.startTime}–${plan.endTime}`
+                        ? ` · ${to12Hour(plan.startTime)}–${to12Hour(
+                            plan.endTime
+                          )}`
                         : ""}
                     </span>
                   </div>
@@ -2086,7 +2099,9 @@ function PlansBody() {
                 if (period?.name) headerPieces.push(period.name);
                 // ⬇️ add this line
                 if (period?.startTime && period?.endTime)
-                  headerPieces.push(`${period.startTime}–${period.endTime}`);
+                  headerPieces.push(
+                    `${to12Hour(period.startTime)}–${to12Hour(period.endTime)}`
+                  );
                 if (typeof period?.totalStudents === "number")
                   headerPieces.push(`${period.totalStudents} students`);
 
@@ -2112,9 +2127,10 @@ function PlansBody() {
                           : ""}
 
                         {plan.startTime && plan.endTime
-                          ? ` · ${plan.startTime}–${plan.endTime}`
+                          ? ` · ${to12Hour(plan.startTime)}–${to12Hour(
+                              plan.endTime
+                            )}`
                           : ""}
-                        {plan.name}
                       </span>
                     </div>
                     <div className="p-2 space-y-1 text-xs">
@@ -2209,7 +2225,9 @@ function PlansBody() {
                     <span className="truncate">
                       {period.name}
                       {period.startTime && period.endTime
-                        ? ` • ${period.startTime}–${period.endTime}`
+                        ? ` • ${to12Hour(period.startTime)}–${to12Hour(
+                            period.endTime
+                          )}`
                         : ""}
                       {typeof period.totalStudents === "number"
                         ? ` • ${period.totalStudents} students`
@@ -2697,7 +2715,9 @@ function PlansBody() {
                               : ""}
                             {plan.name && plan.name.trim()}
                             {plan.startTime && plan.endTime
-                              ? ` · ${plan.startTime}–${plan.endTime}`
+                              ? ` · ${to12Hour(plan.startTime)}–${to12Hour(
+                                  plan.endTime
+                                )}`
                               : plan.startTime
                               ? ` · ${plan.startTime}`
                               : plan.endTime

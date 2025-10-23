@@ -14,6 +14,7 @@ import {
 import { db } from "@/firebase/firebase";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
+import { format, parse } from "date-fns";
 import {
   Card,
   CardContent,
@@ -135,7 +136,14 @@ export default function PeriodsPage() {
   const [itemToDelete, setItemToDelete] = useState<SchoolYear | Period | null>(
     null
   );
-
+  function to12Hour(time?: string) {
+    if (!time) return "";
+    try {
+      return format(parse(time, "HH:mm", new Date()), "h:mm a");
+    } catch {
+      return time;
+    }
+  }
   useEffect(() => {
     if (currentUser) {
       fetchData();
@@ -564,14 +572,20 @@ export default function PeriodsPage() {
                                 <TableCell className="font-medium">
                                   {period.name}
                                 </TableCell>
-                                <TableCell>{period.startTime}</TableCell>
-                                <TableCell>{period.endTime}</TableCell>
+                                <TableCell>
+                                  {to12Hour(period.startTime)}
+                                </TableCell>
+                                <TableCell>
+                                  {to12Hour(period.endTime)}
+                                </TableCell>
+
                                 <TableCell>
                                   {period.dayOfWeek || "All days"}
                                   {period.earlyRelease && (
                                     <div className="text-xs text-muted-foreground mt-1">
-                                      Early: {period.earlyRelease.startTime}–
-                                      {period.earlyRelease.endTime} (
+                                      Early:{" "}
+                                      {to12Hour(period.earlyRelease.startTime)}–
+                                      {to12Hour(period.earlyRelease.endTime)} (
                                       {{
                                         mon: "Mon",
                                         tue: "Tue",
