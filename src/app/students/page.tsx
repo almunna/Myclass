@@ -376,6 +376,131 @@ export default function StudentsPage() {
   };
   // =============================================
 
+  // ======== BULK PLAN ACCESS ========
+  const loadStudentsByIds = async (ids: string[]) => {
+    const snaps = await Promise.all(
+      ids.map((id) => getDoc(doc(db, "students", id)))
+    );
+    return snaps
+      .filter((s) => s.exists())
+      .map((s) => ({ id: s.id, ...(s.data() as any) }));
+  };
+
+  const handleBulkGrantAccess = async () => {
+    if (selectedIds.length === 0) return;
+    try {
+      const studentsToUpdate = await loadStudentsByIds(selectedIds);
+
+      const batch = writeBatch(db);
+      let granted = 0;
+      const errors: string[] = [];
+
+      for (const s of studentsToUpdate) {
+        const sid: string | undefined = s.studentId;
+        if (!sid) {
+          errors.push(`${s.name || s.id}: missing Student ID`);
+          continue;
+        }
+
+        // Ensure username (sid) is not already taken by a *different* student
+        const credRef = doc(db, STUDENT_CREDS_COLL, sid);
+        const credSnap = await getDoc(credRef);
+        const takenByOther =
+          credSnap.exists() &&
+          credSnap.data()?.studentRef &&
+          credSnap.data().studentRef !== s.id;
+
+        if (takenByOther) {
+          errors.push(
+            `${s.name || s.id} (${sid}): ID already used by another login`
+          );
+          continue;
+        }
+
+        // Update student flag
+        batch.set(
+          doc(db, "students", s.id),
+          { hasPlanAccess: true, updatedAt: new Date() },
+          { merge: true }
+        );
+
+        // Upsert login (periodIds from student's current periods)
+        const periodIds: string[] = Array.isArray(s.periods)
+          ? s.periods.map((p: any) => p.id)
+          : s.periodId
+          ? [s.periodId]
+          : [];
+
+        await setDoc(
+          credRef,
+          {
+            username: sid,
+            password: sid,
+            studentRef: s.id,
+            teacherId: currentUser?.uid,
+            name: s.name,
+            periodIds,
+            updatedAt: new Date(),
+            enabled: true,
+          },
+          { merge: true }
+        );
+
+        granted += 1;
+      }
+
+      await batch.commit();
+      await fetchStudents();
+
+      if (granted)
+        toast.success(`Granted plan access to ${granted} student(s)`);
+      if (errors.length) toast.error(errors.join(" • "));
+    } catch (err) {
+      console.error("Bulk grant access error:", err);
+      toast.error("Failed to grant plan access");
+    }
+  };
+
+  const handleBulkRevokeAccess = async () => {
+    if (selectedIds.length === 0) return;
+    try {
+      const studentsToUpdate = await loadStudentsByIds(selectedIds);
+
+      const batch = writeBatch(db);
+      let revoked = 0;
+
+      for (const s of studentsToUpdate) {
+        const sid: string | undefined = s.studentId;
+
+        // Update student flag
+        batch.set(
+          doc(db, "students", s.id),
+          { hasPlanAccess: false, updatedAt: new Date() },
+          { merge: true }
+        );
+
+        // Remove creds if present
+        if (sid) {
+          try {
+            await deleteStudentCreds(sid);
+            revoked += 1;
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      await batch.commit();
+      await fetchStudents();
+
+      toast.success(`Revoked plan access for ${revoked} student(s)`);
+    } catch (err) {
+      console.error("Bulk revoke access error:", err);
+      toast.error("Failed to revoke plan access");
+    }
+  };
+  // ==================================
+
   const handleSaveStudent = async () => {
     if (!name || !studentId) {
       toast.error("Name and Student ID are required");
@@ -610,6 +735,21 @@ export default function StudentsPage() {
             <Button onClick={openAddDialog} className="flex items-center gap-2">
               <PlusCircle className="h-4 w-4" />
               Add Student
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleBulkGrantAccess}
+              className="flex items-center gap-2"
+            >
+              Grant Plan Access
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={handleBulkRevokeAccess}
+              className="flex items-center gap-2"
+            >
+              Revoke Plan Access
             </Button>
           </div>
         </div>

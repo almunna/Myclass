@@ -204,6 +204,7 @@ export type LessonPlan = {
   schoolYearId: string;
   periodId: string;
   date: string;
+  name?: string;
   startTime?: string;
   endTime?: string;
   topic?: string;
@@ -389,6 +390,7 @@ export function LessonPlanModal({
 
     // 2) Clear all content fields, field colors, times and local attachments array
     safeSet({
+      name: "",
       topic: "",
       objective: "",
       resources: "",

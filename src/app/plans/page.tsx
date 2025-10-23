@@ -626,10 +626,42 @@ function PlansBody() {
   const [quickPeriodId, setQuickPeriodId] = useState<string | null>(null);
   const [quickIsEvent, setQuickIsEvent] = useState<boolean>(false);
 
+  // ============================
+  // Copy/Paste (modal-only fields)
+  // ============================
+  type ModalContent = {
+    topic?: string;
+    objective?: string;
+    resources?: string;
+    assignments?: string;
+    homework?: string;
+    notes?: string;
+    standards?: string;
+    // matches how you read/write it later
+    fieldColors?: Record<string, string>;
+    attachments?: Attachment[];
+  };
+
+  const extractModalContent = (p: LessonPlan): ModalContent => ({
+    topic: p.topic ?? "",
+    objective: p.objective ?? "",
+    resources: p.resources ?? "",
+    assignments: p.assignments ?? "",
+    homework: p.homework ?? "",
+    notes: p.notes ?? "",
+    standards: p.standards ?? "",
+    attachments: Array.isArray(p.attachments) ? p.attachments : [],
+  });
+
   // Clipboard for copy/paste + bump days
-  const [clipboard, setClipboard] = useState<{ block: LessonPlan[] } | null>(
+  const [clipboard, setClipboard] = useState<{ modal: ModalContent } | null>(
     null
   );
+
+  // Paste dialog (choose any period)
+  const [pasteDialogOpen, setPasteDialogOpen] = useState(false);
+  const [pasteTargetDate, setPasteTargetDate] = useState<string | null>(null);
+  const [pasteTargetPeriodId, setPasteTargetPeriodId] = useState<string>("");
 
   // Shift controls
   const [shiftCountForward, setShiftCountForward] = useState<number>(1);
@@ -928,10 +960,8 @@ function PlansBody() {
         const at = a.startTime || "";
         const bt = b.startTime || "";
         if (at !== bt) return at.localeCompare(bt);
-        const an =
-          (periodMap.get(a.periodId)?.name || "") + (a.name || "Untitled");
-        const bn =
-          (periodMap.get(b.periodId)?.name || "") + (b.name || "Untitled");
+        const an = (periodMap.get(a.periodId)?.name || "") + a.name;
+        const bn = (periodMap.get(b.periodId)?.name || "") + b.name;
         return an.localeCompare(bn);
       });
       map.set(k, arr);
@@ -1025,8 +1055,9 @@ function PlansBody() {
       name: payload.name?.trim(),
       startTime: resolvedStart,
       endTime: resolvedEnd,
-      colorBg: payload.colorBg || undefined,
-      colorText: payload.colorText || undefined,
+      colorBg: payload.colorBg?.trim() ? payload.colorBg : undefined,
+      colorText: payload.colorText?.trim() ? payload.colorText : undefined,
+
       attachments: [],
       meta: { createdAt: new Date(), updatedAt: new Date() },
     };
@@ -1060,8 +1091,8 @@ function PlansBody() {
       name: payload.name?.trim(),
       startTime: payload.startTime || undefined,
       endTime: payload.endTime || undefined,
-      colorBg: payload.colorBg || undefined,
-      colorText: payload.colorText || undefined,
+      colorBg: payload.colorBg?.trim() ? payload.colorBg : undefined,
+      colorText: payload.colorText?.trim() ? payload.colorText : undefined,
       attachments: [],
       meta: { createdAt: new Date(), updatedAt: new Date() },
     };
@@ -1359,29 +1390,55 @@ function PlansBody() {
       toast({ title: "Nothing to copy here.", variant: "destructive" });
       return;
     }
-    setClipboard({ block: [plan] });
-    toast({ title: "Copied plan." });
+    const modalOnly = extractModalContent(plan);
+    setClipboard({ modal: modalOnly });
+    toast({ title: "Copied plan content (modal fields only)." });
   }
-  async function pasteAt(date: string) {
-    if (!clipboard?.block?.length || !currentUser || !selectedYearId) return;
-    const src = clipboard.block[0];
-    const newPid = src.periodId || uid();
-    const base = baseIdOf(currentUser.uid, selectedYearId, newPid, date);
+
+  async function createFromClipboard(date: string, periodId: string) {
+    if (!clipboard?.modal || !currentUser || !selectedYearId) return;
+
+    const base = baseIdOf(
+      currentUser.uid,
+      selectedYearId,
+      periodId || uid(),
+      date
+    );
     const id = makeUniqueId(base, plans);
-    const { id: _drop, ...rest } = src;
+
     const payload: LessonPlan = {
-      ...rest,
+      id,
       teacherId: currentUser.uid,
       schoolYearId: selectedYearId,
-      periodId: newPid,
+      periodId,
       date,
+      topic: clipboard.modal.topic || undefined,
+      objective: clipboard.modal.objective || undefined,
+      resources: clipboard.modal.resources || undefined,
+      assignments: clipboard.modal.assignments || undefined,
+      homework: clipboard.modal.homework || undefined,
+      notes: clipboard.modal.notes || undefined,
+      standards: clipboard.modal.standards || undefined,
+      attachments: clipboard.modal.attachments ?? [],
       meta: { createdAt: new Date(), updatedAt: new Date() },
     };
+
     await setDoc(doc(db, "lessonPlans", id), clean(payload), { merge: true });
     setPlans((prev) =>
-      [...prev, { ...payload, id }].sort((a, b) => a.date.localeCompare(b.date))
+      [...prev, payload].sort((a, b) => a.date.localeCompare(b.date))
     );
-    toast({ title: "Pasted plan." });
+    toast({ title: "Pasted into selected period." });
+
+    // 🔚 Auto-exit paste mode after one paste
+    setClipboard(null);
+    setPasteDialogOpen(false);
+  }
+
+  async function pasteAt(date: string) {
+    if (!clipboard?.modal) return;
+    setPasteTargetDate(date);
+    setPasteTargetPeriodId("");
+    setPasteDialogOpen(true);
   }
 
   // Shift / Bump
@@ -1960,7 +2017,7 @@ function PlansBody() {
                     style={{ background: bg, color: tx }}
                   >
                     <span className="truncate">
-                      {plan.name || "Untitled"}
+                      {plan.name}
                       {plan.startTime && plan.endTime
                         ? ` · ${plan.startTime}–${plan.endTime}`
                         : ""}
@@ -1971,9 +2028,7 @@ function PlansBody() {
                     {plan.objective && (
                       <Line label="Objective" value={plan.objective} />
                     )}
-                    {plan.resources && (
-                      <Line label="Resources" value={plan.resources} />
-                    )}
+                    {plan.resources && <ResourcesLine value={plan.resources} />}
                     {plan.assignments && (
                       <Line label="Assignments" value={plan.assignments} />
                     )}
@@ -2053,12 +2108,13 @@ function PlansBody() {
                     >
                       <span className="truncate">
                         {headerPieces.length
-                          ? headerPieces.join(" • ") + " — "
+                          ? headerPieces.join(" • ") + " —  "
                           : ""}
-                        {plan.name || "Untitled"}
+
                         {plan.startTime && plan.endTime
                           ? ` · ${plan.startTime}–${plan.endTime}`
                           : ""}
+                        {plan.name}
                       </span>
                     </div>
                     <div className="p-2 space-y-1 text-xs">
@@ -2067,8 +2123,9 @@ function PlansBody() {
                         <Line label="Objective" value={plan.objective} />
                       )}
                       {plan.resources && (
-                        <Line label="Resources" value={plan.resources} />
+                        <ResourcesLine value={plan.resources} />
                       )}
+
                       {plan.assignments && (
                         <Line label="Assignments" value={plan.assignments} />
                       )}
@@ -2110,6 +2167,22 @@ function PlansBody() {
                             Click to add details…
                           </div>
                         )}
+
+                      {clipboard?.modal && (
+                        <div className="mt-2 flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              createFromClipboard(dateStr, period.id);
+                            }}
+                            title="Paste modal content into this period"
+                          >
+                            Paste into this period
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -2146,6 +2219,22 @@ function PlansBody() {
                   <div className="p-2 text-xs text-muted-foreground italic">
                     No plan yet
                   </div>
+
+                  {clipboard?.modal && (
+                    <div className="px-2 pb-2 flex justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          createFromClipboard(dateStr, period.id);
+                        }}
+                        title="Paste modal content into this period"
+                      >
+                        Paste into this period
+                      </Button>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -2199,7 +2288,7 @@ function PlansBody() {
           >
             <div className="px-3 py-2 text-xs text-muted-foreground border-b">
               {menu.date}
-              {menu.plan ? ` · ${menu.plan.name || "Untitled"}` : ""}
+              {menu.plan ? ` · ${menu.plan.name}` : ""}
             </div>
 
             <div className="py-1">
@@ -2253,11 +2342,11 @@ function PlansBody() {
               <button
                 className={cn(
                   "w-full px-3 py-2 text-left hover:bg-muted/40",
-                  !clipboard?.block?.length && "opacity-50 cursor-not-allowed"
+                  !clipboard?.modal && "opacity-50 cursor-not-allowed"
                 )}
-                disabled={!clipboard?.block?.length}
+                disabled={!clipboard?.modal}
                 onClick={() => {
-                  if (!clipboard?.block?.length) return;
+                  if (!clipboard?.modal) return;
                   pasteAt(menu.date);
                   setMenu(null);
                 }}
@@ -2456,9 +2545,7 @@ function PlansBody() {
               <DialogTitle>Delete plan?</DialogTitle>
               <DialogDescription>
                 This will permanently remove{" "}
-                <span className="font-medium">
-                  {confirmPlan?.name?.trim() || "Untitled"}
-                </span>
+                <span className="font-medium">{confirmPlan?.name?.trim()}</span>
                 {confirmDate ? ` on ${confirmDate}` : ""}. This action cannot be
                 undone.
               </DialogDescription>
@@ -2477,6 +2564,65 @@ function PlansBody() {
                 }}
               >
                 Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Paste dialog: choose period to paste into */}
+        <Dialog open={pasteDialogOpen} onOpenChange={setPasteDialogOpen}>
+          <DialogContent className="sm:max-w-[420px]">
+            <DialogHeader>
+              <DialogTitle>Paste plan content</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="text-sm text-muted-foreground">
+                Choose a period to receive the copied modal fields
+                {pasteTargetDate ? ` on ${pasteTargetDate}` : ""}.
+              </div>
+              <div className="space-y-1">
+                <Label>Period</Label>
+                <Select
+                  value={pasteTargetPeriodId}
+                  onValueChange={setPasteTargetPeriodId}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select period" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {periods.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                        {typeof p.totalStudents === "number"
+                          ? ` · ${p.totalStudents}`
+                          : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter className="mt-2">
+              <Button
+                variant="outline"
+                onClick={() => setPasteDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!pasteTargetDate || !pasteTargetPeriodId) return;
+                  await createFromClipboard(
+                    pasteTargetDate,
+                    pasteTargetPeriodId
+                  );
+                  setPasteDialogOpen(false);
+                }}
+                disabled={
+                  !pasteTargetDate || !pasteTargetPeriodId || !clipboard?.modal
+                }
+              >
+                Paste
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -2549,7 +2695,7 @@ function PlansBody() {
                             {headerPieces.length
                               ? headerPieces.join(" • ") + " — "
                               : ""}
-                            {(plan.name && plan.name.trim()) || "Untitled"}
+                            {plan.name && plan.name.trim()}
                             {plan.startTime && plan.endTime
                               ? ` · ${plan.startTime}–${plan.endTime}`
                               : plan.startTime
@@ -2567,8 +2713,9 @@ function PlansBody() {
                               <Line label="Objective" value={plan.objective} />
                             )}
                             {plan.resources && (
-                              <Line label="Resources" value={plan.resources} />
+                              <ResourcesLine value={plan.resources} />
                             )}
+
                             {plan.assignments && (
                               <Line
                                 label="Assignments"
@@ -2687,6 +2834,39 @@ function PlansBody() {
 }
 
 // ---------------- Subcomponents ----------------
+
+function ResourcesLine({ value }: { value: string }) {
+  const trimmed = value.trim();
+  const singleUrlRe = /^(https?:\/\/[^\s)]+)$/i;
+
+  if (singleUrlRe.test(trimmed)) {
+    const stop = (e: React.SyntheticEvent) => {
+      e.stopPropagation(); // prevents parent onClick/onDoubleClick
+    };
+
+    return (
+      <div className="text-xs leading-snug">
+        <span className="font-medium">Resources:</span>{" "}
+        <a
+          href={trimmed}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline text-primary hover:text-primary/80 break-all"
+          title={trimmed}
+          onClick={stop}
+          onMouseDown={stop}
+          onDoubleClick={stop}
+          onTouchStart={stop}
+        >
+          {trimmed}
+        </a>
+      </div>
+    );
+  }
+
+  return <Line label="Resources" value={value} />;
+}
+
 function Line({ label, value }: { label: string; value: string }) {
   return (
     <div className="text-xs leading-snug">
