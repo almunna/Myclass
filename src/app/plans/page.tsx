@@ -125,6 +125,9 @@ type Period = {
   // ⬇️ add these two lines
   startTime?: string;
   endTime?: string;
+
+  // ⬇️ NEW: which weekdays this period meets (null => meets every weekday Mon–Fri)
+  dayOfWeek?: string | null;
 };
 
 type Attachment = {
@@ -216,6 +219,29 @@ function clean<T>(obj: T): T {
 
 function nsDocRef(userId: string, yearId: string) {
   return doc(db, "nonSchoolDays", `${userId}__${yearId}`);
+}
+
+// ⬇️ NEW: weekday helpers for filtering periods by meeting days
+const weekdayCodes = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+type WeekdayCode = (typeof weekdayCodes)[number];
+
+function codeForDate(dateStr: string): WeekdayCode {
+  return weekdayCodes[parseISO(dateStr).getDay()];
+}
+function parseDaysCSV(csv?: string | null): WeekdayCode[] {
+  if (!csv || !csv.trim()) return ["mon", "tue", "wed", "thu", "fri"]; // null/empty => all weekdays
+  return csv
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) =>
+      ["mon", "tue", "wed", "thu", "fri"].includes(s)
+    ) as WeekdayCode[];
+}
+function periodMeetsOn(dateStr: string, period: Period): boolean {
+  const code = codeForDate(dateStr);
+  if (code === "sat" || code === "sun") return false; // grid doesn’t show these anyway
+  const days = parseDaysCSV(period.dayOfWeek ?? null);
+  return days.includes(code);
 }
 
 // ---------------- Quick Plan Modal (Create + Edit with preview) ----------------
@@ -315,7 +341,7 @@ function QuickPlanModal({
     } else {
       onPreviewColors?.(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-comments
   }, [open, editPlan, isEventMode]);
 
   const periodColorHint = useMemo(() => {
@@ -1902,8 +1928,11 @@ function PlansBody() {
         if (pl.periodId) byPeriod.set(pl.periodId, pl);
       }
 
-      // One row per period (placeholder if no plan yet)
-      const rows = periods.map((p) => ({
+      // ⬇️ NEW: only include periods that meet on this weekday
+      const meetingPeriods = periods.filter((p) => periodMeetsOn(dateStr, p));
+
+      // One row per *meeting* period (placeholder if no plan yet)
+      const rows = meetingPeriods.map((p) => ({
         period: p,
         plan: byPeriod.get(p.id) || null,
         isPlaceholder: !byPeriod.has(p.id),
@@ -1938,6 +1967,7 @@ function PlansBody() {
     setEditorOpen(true);
   }
 
+  // One day cell
   // One day cell
   function renderCell(d: Date) {
     const dateStr = iso(d);
@@ -2028,7 +2058,7 @@ function PlansBody() {
                     style={{ background: bg, color: tx }}
                   >
                     <span className="truncate">
-                      {plan.name}
+                      {plan.name?.trim()}
                       {plan.startTime && plan.endTime
                         ? ` · ${to12Hour(plan.startTime)}–${to12Hour(
                             plan.endTime
@@ -2097,7 +2127,6 @@ function PlansBody() {
 
                 const headerPieces: string[] = [];
                 if (period?.name) headerPieces.push(period.name);
-                // ⬇️ add this line
                 if (period?.startTime && period?.endTime)
                   headerPieces.push(
                     `${to12Hour(period.startTime)}–${to12Hour(period.endTime)}`
@@ -2123,9 +2152,9 @@ function PlansBody() {
                     >
                       <span className="truncate">
                         {headerPieces.length
-                          ? headerPieces.join(" • ") + " —  "
+                          ? headerPieces.join(" • ") + " — "
                           : ""}
-
+                        {plan.name?.trim()}
                         {plan.startTime && plan.endTime
                           ? ` · ${to12Hour(plan.startTime)}–${to12Hour(
                               plan.endTime
@@ -2204,7 +2233,6 @@ function PlansBody() {
                 );
               }
 
-              // Placeholder row for this period (no plan yet)
               // Placeholder row for this period (no plan yet) — click opens full editor
               return (
                 <div
@@ -2665,8 +2693,7 @@ function PlansBody() {
               }
               const printable = dayPlans.filter((plan) => {
                 const name = (plan.name ?? "").trim();
-                const nameIsMeaningful =
-                  !!name && name.toLowerCase() !== "untitled";
+                const nameIsMeaningful = !!name && name.toLowerCase();
                 const hasTimes = !!(plan.startTime || plan.endTime);
                 const hasAttachments = (plan.attachments?.length ?? 0) > 0;
                 const hasTextSections = [

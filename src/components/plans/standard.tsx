@@ -21,6 +21,7 @@ type SavedStandard = {
   id: string;
   teacherId: string;
   grade: string; // e.g. "6th"
+  subject: string; // e.g. "ELA"
   code: string; // e.g. "ELA.1.3.a"
   description: string; // e.g. "Identify security safeguards..."
   createdAt?: any;
@@ -101,16 +102,20 @@ export default function StandardsControls({
     if (!allMine) return [];
     if (!term.trim()) return [];
     const t = term.toLowerCase();
-    return allMine.filter(
-      (r) =>
+    return allMine.filter((r) => {
+      const sub = (r.subject || "").toLowerCase();
+      return (
         r.code.toLowerCase().includes(t) ||
         r.description.toLowerCase().includes(t) ||
-        r.grade.toLowerCase().includes(t)
-    );
+        r.grade.toLowerCase().includes(t) ||
+        sub.includes(t)
+      );
+    });
   }, [allMine, term]);
 
   // ---------- ADD NEW ----------
   const [grade, setGrade] = React.useState("6th");
+  const [subject, setSubject] = React.useState(""); // new
   const [code, setCode] = React.useState("");
   const [desc, setDesc] = React.useState("");
   const [savingAdd, setSavingAdd] = React.useState(false);
@@ -123,6 +128,7 @@ export default function StandardsControls({
       const payload: Omit<SavedStandard, "id"> = {
         teacherId,
         grade,
+        subject: subject.trim(),
         code: code.trim(),
         description: desc.trim(),
         createdAt: serverTimestamp(),
@@ -135,6 +141,7 @@ export default function StandardsControls({
       // reset UI
       setCode("");
       setDesc("");
+      setSubject("");
       setMode("idle");
     } finally {
       setSavingAdd(false);
@@ -142,7 +149,7 @@ export default function StandardsControls({
   }
 
   // ---------- IMPORT (.xlsx only) ----------
-  // Excel columns: Grade, Standard #, Description
+  // Excel columns: Grade, Subject, Standard #, Description
   const [importing, setImporting] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -151,8 +158,8 @@ export default function StandardsControls({
     const XLSX: any = await import("xlsx");
 
     // 1) Template sheet with headers + 12 pre-seeded rows
-    const headers = ["Grade", "Standard #", "Description"];
-    const rows = Array.from({ length: 12 }, () => ["", "", ""]);
+    const headers = ["Grade", "Subject", "Standard #", "Description"];
+    const rows = Array.from({ length: 12 }, () => ["", "", "", ""]);
     const aoa = [headers, ...rows];
     const wsTemplate = XLSX.utils.aoa_to_sheet(aoa);
 
@@ -176,7 +183,12 @@ export default function StandardsControls({
     ];
 
     // Optional column widths for nicer layout
-    (wsTemplate as any)["!cols"] = [{ wch: 10 }, { wch: 18 }, { wch: 70 }];
+    (wsTemplate as any)["!cols"] = [
+      { wch: 10 }, // Grade
+      { wch: 12 }, // Subject
+      { wch: 18 }, // Standard #
+      { wch: 70 }, // Description
+    ];
 
     // 4) Build and save workbook
     const wb = XLSX.utils.book_new();
@@ -201,12 +213,13 @@ export default function StandardsControls({
 
       const created: SavedStandard[] = [];
       for (const r of rows) {
-        const [g, c, d] = r;
+        const [g, s, c, d] = r;
         if (!g || !c || !d) continue;
         const ref = doc(collection(db, "standards"));
         const payload: Omit<SavedStandard, "id"> = {
           teacherId,
           grade: g.trim(),
+          subject: (s || "").trim(),
           code: c.trim(),
           description: d.trim(),
           createdAt: serverTimestamp(),
@@ -277,7 +290,7 @@ export default function StandardsControls({
           <Input
             value={term}
             onChange={(e) => setTerm(e.target.value)}
-            placeholder="Type a code, description, or grade (e.g. 'ELA.1.3.a' or 'cite')"
+            placeholder="Type a grade, subject, code, or part of the description"
           />
           <div className="max-h-48 overflow-auto rounded-md border">
             {term && matches.length === 0 && (
@@ -317,6 +330,13 @@ export default function StandardsControls({
                       <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
                         {m.grade}
                       </span>{" "}
+                      {m.subject && (
+                        <>
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                            {m.subject}
+                          </span>{" "}
+                        </>
+                      )}
                       <span className="font-medium">{m.code}</span>
                     </div>
                     <div className="text-xs text-muted-foreground">
@@ -350,7 +370,20 @@ export default function StandardsControls({
               </select>
             </div>
 
-            <div className="sm:col-span-4">
+            {/* Subject (new) */}
+            <div className="sm:col-span-3">
+              <Label className="block w-full mb-1 text-[14px] leading-none tracking-wide text-muted-foreground">
+                Subject
+              </Label>
+              <Input
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="ELA, Math, Science…"
+                className="h-10"
+              />
+            </div>
+
+            <div className="sm:col-span-3">
               <Label className="block w-full mb-1 text-[14px] leading-none tracking-wide text-muted-foreground whitespace-nowrap">
                 Standard Number
               </Label>
@@ -362,8 +395,8 @@ export default function StandardsControls({
               />
             </div>
 
-            {/* 🔧 Make Description span remaining columns (6 → fills full width) */}
-            <div className="sm:col-span-5">
+            {/* Description */}
+            <div className="sm:col-span-3">
               <Label className="block w-full mb-1 text-[14px] leading-none tracking-wide text-muted-foreground">
                 Description
               </Label>
@@ -418,7 +451,11 @@ export default function StandardsControls({
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   Template includes a Grade dropdown (1st–12th) and 12 rows
-                  ready to fill.
+                  ready to fill. Columns:{" "}
+                  <span className="font-medium">Grade</span>,{" "}
+                  <span className="font-medium">Subject</span>,{" "}
+                  <span className="font-medium">Standard #</span>,{" "}
+                  <span className="font-medium">Description</span>.
                 </p>
               </div>
             </div>
@@ -452,6 +489,7 @@ export default function StandardsControls({
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
             Excel columns: <span className="font-medium">Grade</span>,{" "}
+            <span className="font-medium">Subject</span>,{" "}
             <span className="font-medium">Standard #</span>,{" "}
             <span className="font-medium">Description</span>.
           </p>
@@ -486,9 +524,13 @@ export default function StandardsControls({
 
 /* ---------- utils ---------- */
 
-function renderStd(s: Pick<SavedStandard, "grade" | "code" | "description">) {
+function renderStd(
+  s: Pick<SavedStandard, "grade" | "subject" | "code" | "description">
+) {
   // how it shows in the plan.standards string
-  return `${s.grade} ${s.code} ${s.description}`;
+  // Include subject when present, e.g. "6th ELA ELA.1.3.a Identify..."
+  const subj = s.subject?.trim() ? ` ${s.subject.trim()}` : "";
+  return `${s.grade}${subj} ${s.code} ${s.description}`;
 }
 
 function splitStandards(v: string) {
@@ -499,7 +541,7 @@ function splitStandards(v: string) {
     .filter(Boolean);
 }
 
-/** Parse first worksheet of an .xlsx ArrayBuffer into rows [grade, code, desc] */
+/** Parse first worksheet of an .xlsx ArrayBuffer into rows [grade, subject, code, desc] */
 async function parseXlsx(buf: ArrayBuffer): Promise<string[][]> {
   const XLSX: any = await import("xlsx");
   const wb = XLSX.read(buf, { type: "array" });
@@ -531,13 +573,14 @@ async function parseXlsx(buf: ArrayBuffer): Promise<string[][]> {
   const out: string[][] = [];
   for (const r of rows) {
     const g = getVal(r, ["grade"]);
+    const s = getVal(r, ["subject"]);
     const c = getVal(r, ["standard #", "standard#", "standard"]);
     const d = getVal(r, ["description", "desc"]);
-    out.push([g, c, d]);
+    out.push([g, s, c, d]);
   }
 
-  // If file had only header and no data, return []
-  return out.filter(([g, c, d]) => (g || c || d) && g && c && d);
+  // Require all 4 columns to be present
+  return out.filter(([g, s, c, d]) => (g || s || c || d) && g && s && c && d);
 }
 
 function linkCls(active: boolean) {

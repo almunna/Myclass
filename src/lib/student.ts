@@ -59,7 +59,7 @@ export async function loginStudent(username: string, password: string) {
   const cred = credSnap.data() as {
     username: string;
     password: string;
-    studentRef: string; // "students/{id}"
+    studentRef: string; // e.g. "students/{id}"
     teacherId?: string;
     name?: string;
     enabled?: boolean;
@@ -73,17 +73,46 @@ export async function loginStudent(username: string, password: string) {
     throw new Error("Invalid Student ID or password.");
   }
 
-  // ✅ Use periodIds from the login doc (do NOT read /students)
-  const periodIds = Array.isArray(cred.periodIds)
+  // ✅ Prefer values from the login doc
+  let teacherId = cred.teacherId || "";
+  let periodIds = Array.isArray(cred.periodIds)
     ? cred.periodIds.slice(0, 10) // Firestore 'in' queries use chunks of <=10
     : [];
+
+  // 🔁 Fallback for legacy/hand-made creds that missed teacherId/periodIds
+  if ((!teacherId || periodIds.length === 0) && cred.studentRef) {
+    // Robustly build a doc ref from cred.studentRef ("students/{id}" or just "{id}")
+    const toStudentRef = (path: string) => {
+      const segs = path.split("/").filter(Boolean);
+      if (segs.length >= 2) return doc(db, segs[0], segs[1]);
+      return doc(db, "students", path);
+    };
+
+    try {
+      const sRef = toStudentRef(cred.studentRef);
+      const sSnap = await getDoc(sRef);
+      if (sSnap.exists()) {
+        const s = sSnap.data() as any;
+        teacherId = teacherId || s.teacherId || "";
+        if (periodIds.length === 0) {
+          if (Array.isArray(s.periods)) {
+            periodIds = s.periods.map((p: any) => p.id).slice(0, 10);
+          } else if (s.periodId) {
+            periodIds = [s.periodId];
+          }
+        }
+      }
+    } catch {
+      // ignore fallback errors; we'll proceed with whatever we have
+    }
+  }
 
   // Create/update student session under the current anonymous uid
   const anonUid = auth.currentUser!.uid;
   await setDoc(
     doc(db, "studentSessions", anonUid),
     {
-      teacherId: cred.teacherId || "",
+      teacherId: teacherId || "",
       studentRef: cred.studentRef,
       periodIds,
       updatedAt: new Date(),
@@ -99,7 +128,7 @@ export async function loginStudent(username: string, password: string) {
       role: "student",
       displayName: cred.name || cred.username || u,
       studentRef: cred.studentRef,
-      teacherId: cred.teacherId || "",
+      teacherId: teacherId || "",
       hasActiveSubscription: true,
       subscriptionPlan: "student",
     }),

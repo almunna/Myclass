@@ -78,7 +78,7 @@ interface Period {
   name: string;
   startTime: string;
   endTime: string;
-  dayOfWeek?: string;
+  dayOfWeek?: string | null; // CSV like "mon,wed,fri" or null for Mon–Fri (every weekday)
   schoolYearId: string;
   teacherId: string;
   createdAt: any;
@@ -117,11 +117,37 @@ export default function PeriodsPage() {
     endDate: new Date(),
     isActive: false,
   });
+
+  // Helper for weekday CSV <-> UI
+  const weekdayLabels: Record<string, string> = {
+    mon: "Mon",
+    tue: "Tue",
+    wed: "Wed",
+    thu: "Thu",
+    fri: "Fri",
+  };
+  const allWeekdays = ["mon", "tue", "wed", "thu", "fri"] as const;
+
+  function parseDaysCSV(csv?: string | null): string[] {
+    if (!csv || !csv.trim()) return [...allWeekdays]; // null/empty means every weekday
+    return csv
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => allWeekdays.includes(s as any));
+  }
+  function formatDaysForTable(csv?: string | null): string {
+    const days = parseDaysCSV(csv);
+    if (days.length === 5) return "All weekdays";
+    return days.map((d) => weekdayLabels[d]).join(", ");
+  }
+
   const [periodFormData, setPeriodFormData] = useState({
     name: "",
     startTime: "08:00",
     endTime: "09:00",
-    dayOfWeek: "all",
+    // replaced dayOfWeek single-select with explicit controls:
+    meetsEveryWeekday: true,
+    selectedDays: [] as string[], // subset of ["mon","tue","wed","thu","fri"] when not every weekday
     schoolYearId: "",
     // NEW: early-release form fields
     earlyReleaseEnabled: false,
@@ -224,7 +250,8 @@ export default function PeriodsPage() {
       name: "",
       startTime: "08:00",
       endTime: "09:00",
-      dayOfWeek: "all",
+      meetsEveryWeekday: true,
+      selectedDays: [], // ignored when meetsEveryWeekday = true
       schoolYearId,
       earlyReleaseEnabled: false,
       earlyReleaseDayOfWeek: "wed",
@@ -236,11 +263,14 @@ export default function PeriodsPage() {
 
   const handleEditPeriod = (period: Period) => {
     setSelectedPeriod(period);
+    const parsed = parseDaysCSV(period.dayOfWeek ?? null);
+    const meetsEveryWeekday = parsed.length === 5; // null or all 5 means every weekday
     setPeriodFormData({
       name: period.name,
       startTime: period.startTime,
       endTime: period.endTime,
-      dayOfWeek: period.dayOfWeek || "all",
+      meetsEveryWeekday,
+      selectedDays: meetsEveryWeekday ? [] : parsed,
       schoolYearId: period.schoolYearId,
       // NEW: hydrate early-release fields
       earlyReleaseEnabled: !!period.earlyRelease,
@@ -296,6 +326,15 @@ export default function PeriodsPage() {
       return;
     }
 
+    // Validate weekday selection if not meeting every weekday
+    if (
+      !periodFormData.meetsEveryWeekday &&
+      periodFormData.selectedDays.length === 0
+    ) {
+      toast.error("Select at least one weekday for this period.");
+      return;
+    }
+
     try {
       const earlyRelease = periodFormData.earlyReleaseEnabled
         ? {
@@ -305,12 +344,18 @@ export default function PeriodsPage() {
           }
         : null;
 
+      // Persist as:
+      // - null => meets every weekday (Mon–Fri)
+      // - "mon,wed,fri" => selected subset
+      const dayOfWeekValue: string | null = periodFormData.meetsEveryWeekday
+        ? null
+        : periodFormData.selectedDays.join(",");
+
       const periodData = {
         name: periodFormData.name,
         startTime: periodFormData.startTime,
         endTime: periodFormData.endTime,
-        dayOfWeek:
-          periodFormData.dayOfWeek === "all" ? null : periodFormData.dayOfWeek,
+        dayOfWeek: dayOfWeekValue,
         schoolYearId: periodFormData.schoolYearId,
         teacherId: currentUser?.uid,
         // NEW
@@ -580,20 +625,15 @@ export default function PeriodsPage() {
                                 </TableCell>
 
                                 <TableCell>
-                                  {period.dayOfWeek || "All days"}
+                                  {formatDaysForTable(period.dayOfWeek)}
                                   {period.earlyRelease && (
                                     <div className="text-xs text-muted-foreground mt-1">
                                       Early:{" "}
                                       {to12Hour(period.earlyRelease.startTime)}–
                                       {to12Hour(period.earlyRelease.endTime)} (
-                                      {{
-                                        mon: "Mon",
-                                        tue: "Tue",
-                                        wed: "Wed",
-                                        thu: "Thu",
-                                        fri: "Fri",
-                                      }[period.earlyRelease.dayOfWeek] ||
-                                        period.earlyRelease.dayOfWeek}
+                                      {weekdayLabels[
+                                        period.earlyRelease.dayOfWeek
+                                      ] || period.earlyRelease.dayOfWeek}
                                       )
                                     </div>
                                   )}
@@ -802,6 +842,52 @@ export default function PeriodsPage() {
                   placeholder="e.g., Period 1, Math Class"
                 />
               </div>
+
+              {/* Weekday meeting pattern */}
+              <div className="space-y-2">
+                <Label>Meets On</Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="meetsEveryWeekday"
+                    type="checkbox"
+                    checked={periodFormData.meetsEveryWeekday}
+                    onChange={(e) =>
+                      setPeriodFormData((p) => ({
+                        ...p,
+                        meetsEveryWeekday: e.target.checked,
+                        // clear custom days when toggled on
+                        selectedDays: e.target.checked ? [] : p.selectedDays,
+                      }))
+                    }
+                  />
+                  <Label htmlFor="meetsEveryWeekday">
+                    Meets every weekday (Mon–Fri)
+                  </Label>
+                </div>
+
+                {!periodFormData.meetsEveryWeekday && (
+                  <div className="flex flex-wrap gap-4 mt-2">
+                    {allWeekdays.map((d) => (
+                      <label key={d} className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={periodFormData.selectedDays.includes(d)}
+                          onChange={(e) =>
+                            setPeriodFormData((p) => {
+                              const set = new Set(p.selectedDays);
+                              if (e.target.checked) set.add(d);
+                              else set.delete(d);
+                              return { ...p, selectedDays: Array.from(set) };
+                            })
+                          }
+                        />
+                        <span>{weekdayLabels[d]}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Start Time</Label>
@@ -937,6 +1023,51 @@ export default function PeriodsPage() {
                   placeholder="e.g., Period 1, Math Class"
                 />
               </div>
+
+              {/* Weekday meeting pattern (Edit) */}
+              <div className="space-y-2">
+                <Label>Meets On</Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="meetsEveryWeekdayEdit"
+                    type="checkbox"
+                    checked={periodFormData.meetsEveryWeekday}
+                    onChange={(e) =>
+                      setPeriodFormData((p) => ({
+                        ...p,
+                        meetsEveryWeekday: e.target.checked,
+                        selectedDays: e.target.checked ? [] : p.selectedDays,
+                      }))
+                    }
+                  />
+                  <Label htmlFor="meetsEveryWeekdayEdit">
+                    Meets every weekday (Mon–Fri)
+                  </Label>
+                </div>
+
+                {!periodFormData.meetsEveryWeekday && (
+                  <div className="flex flex-wrap gap-4 mt-2">
+                    {allWeekdays.map((d) => (
+                      <label key={d} className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={periodFormData.selectedDays.includes(d)}
+                          onChange={(e) =>
+                            setPeriodFormData((p) => {
+                              const set = new Set(p.selectedDays);
+                              if (e.target.checked) set.add(d);
+                              else set.delete(d);
+                              return { ...p, selectedDays: Array.from(set) };
+                            })
+                          }
+                        />
+                        <span>{weekdayLabels[d]}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Start Time</Label>

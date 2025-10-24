@@ -24,7 +24,7 @@ export default function StudentLoginPage() {
     setError(null);
 
     try {
-      await loginStudent(username.trim(), password);
+      await loginStudent(username.trim(), password.trim());
       // Hard redirect should occur inside loginStudent()
     } catch (err: any) {
       console.error("Student login failed:", err);

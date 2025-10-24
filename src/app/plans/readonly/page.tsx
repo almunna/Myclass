@@ -36,6 +36,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth"; // ✅ added
 
 import { useAuth } from "@/hooks/useAuth";
 import { Toaster } from "@/components/ui/toaster";
@@ -189,18 +190,21 @@ function ReadOnlyBody() {
   const [printOpen, setPrintOpen] = useState(false);
   const [printPeriodFilter, setPrintPeriodFilter] = useState<string[]>([]);
 
-  // 1) Load student session (for students) or treat as teacher if not anonymous
+  // 1) Load student session (robust to anonymous logins)
   useEffect(() => {
-    const u = auth.currentUser;
-    if (!u) return;
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      if (!u) {
+        setTeacherId("");
+        setAllowedPeriodIds([]);
+        return;
+      }
 
-    if (!u.isAnonymous) {
-      setTeacherId(u.uid);
-      setAllowedPeriodIds([]);
-      return;
-    }
+      if (!u.isAnonymous) {
+        setTeacherId(u.uid);
+        setAllowedPeriodIds([]);
+        return;
+      }
 
-    (async () => {
       try {
         const sessSnap = await getDoc(doc(db, "studentSessions", u.uid));
         if (!sessSnap.exists()) {
@@ -220,8 +224,10 @@ function ReadOnlyBody() {
         setTeacherId("");
         setAllowedPeriodIds([]);
       }
-    })();
-  }, [currentUser]);
+    });
+
+    return () => unsub();
+  }, []); // ✅ subscribe directly to Firebase Auth
 
   // 🚦 Guard: while a student is logged in but the session hasn’t loaded, don’t query
   const waitingOnStudentSession = !!auth.currentUser?.isAnonymous && !teacherId;
@@ -386,7 +392,6 @@ function ReadOnlyBody() {
             const snap = await getDocs(ql);
             snap.forEach((d) => {
               const data = d.data() as LessonPlan;
-              // defensive: skip any doc missing periodId
               if (!data.periodId) return;
               if (data.date >= iso(rangeStart) && data.date <= iso(rangeEnd)) {
                 collected.push({ id: d.id, ...data });
@@ -394,7 +399,6 @@ function ReadOnlyBody() {
             });
           }
         } else {
-          // Teacher view: also exclude events by querying with teacher's period IDs
           const teacherPeriodIds = periods.map((p) => p.id);
           if (!teacherPeriodIds.length) {
             setPlans([]);
@@ -429,7 +433,6 @@ function ReadOnlyBody() {
         setPlans([]);
       }
     })();
-    // include periods in deps because teacher query depends on them
   }, [
     teacherId,
     selectedYearId,
@@ -440,7 +443,6 @@ function ReadOnlyBody() {
     periods,
   ]);
 
-  // Group by date
   const plansByDate = useMemo(() => {
     const map = new Map<string, LessonPlan[]>();
     for (const p of plans) {
