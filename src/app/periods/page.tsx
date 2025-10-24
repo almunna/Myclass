@@ -78,7 +78,7 @@ interface Period {
   name: string;
   startTime: string;
   endTime: string;
-  dayOfWeek?: string | null; // CSV like "mon,wed,fri" or null for Mon–Fri (every weekday)
+  dayOfWeek?: string | string[] | null; // CSV like "mon,wed,fri", legacy array, or null for Mon–Fri (every weekday)
   schoolYearId: string;
   teacherId: string;
   createdAt: any;
@@ -118,7 +118,7 @@ export default function PeriodsPage() {
     isActive: false,
   });
 
-  // Helper for weekday CSV <-> UI
+  // Helper for weekday CSV <-> UI (defensive against legacy array values)
   const weekdayLabels: Record<string, string> = {
     mon: "Mon",
     tue: "Tue",
@@ -128,17 +128,32 @@ export default function PeriodsPage() {
   };
   const allWeekdays = ["mon", "tue", "wed", "thu", "fri"] as const;
 
-  function parseDaysCSV(csv?: string | null): string[] {
-    if (!csv || !csv.trim()) return [...allWeekdays]; // null/empty means every weekday
-    return csv
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => allWeekdays.includes(s as any));
+  function parseDaysCSV(csv?: string | string[] | null): string[] {
+    if (csv == null) return [...allWeekdays];
+
+    let tokens: string[];
+    if (Array.isArray(csv)) {
+      tokens = csv;
+    } else if (typeof csv === "string") {
+      const s = csv.trim();
+      if (!s) return [...allWeekdays];
+      tokens = s.split(",");
+    } else {
+      return [...allWeekdays];
+    }
+
+    return tokens
+      .map((t) => (typeof t === "string" ? t.trim() : ""))
+      .filter(
+        (t): t is string =>
+          t.length > 0 && (allWeekdays as readonly string[]).includes(t)
+      );
   }
-  function formatDaysForTable(csv?: string | null): string {
+
+  function formatDaysForTable(csv?: string | string[] | null): string {
     const days = parseDaysCSV(csv);
     if (days.length === 5) return "All weekdays";
-    return days.map((d) => weekdayLabels[d]).join(", ");
+    return days.map((d) => weekdayLabels[d] ?? d).join(", ");
   }
 
   const [periodFormData, setPeriodFormData] = useState({

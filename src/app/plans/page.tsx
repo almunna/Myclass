@@ -127,7 +127,7 @@ type Period = {
   endTime?: string;
 
   // ⬇️ NEW: which weekdays this period meets (null => meets every weekday Mon–Fri)
-  dayOfWeek?: string | null;
+  dayOfWeek?: string | string[] | null;
 };
 
 type Attachment = {
@@ -228,15 +228,30 @@ type WeekdayCode = (typeof weekdayCodes)[number];
 function codeForDate(dateStr: string): WeekdayCode {
   return weekdayCodes[parseISO(dateStr).getDay()];
 }
-function parseDaysCSV(csv?: string | null): WeekdayCode[] {
-  if (!csv || !csv.trim()) return ["mon", "tue", "wed", "thu", "fri"]; // null/empty => all weekdays
-  return csv
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) =>
-      ["mon", "tue", "wed", "thu", "fri"].includes(s)
+function parseDaysCSV(csv?: string | string[] | null): WeekdayCode[] {
+  // null/undefined/empty => meets every weekday
+  if (csv == null) return ["mon", "tue", "wed", "thu", "fri"];
+
+  let tokens: unknown[];
+
+  if (Array.isArray(csv)) {
+    tokens = csv;
+  } else if (typeof csv === "string") {
+    const s = csv.trim();
+    if (!s) return ["mon", "tue", "wed", "thu", "fri"];
+    tokens = s.split(",");
+  } else {
+    // any unexpected type => default to weekdays
+    return ["mon", "tue", "wed", "thu", "fri"];
+  }
+
+  return tokens
+    .map((t) => String(t).trim().toLowerCase())
+    .filter((d) =>
+      ["mon", "tue", "wed", "thu", "fri"].includes(d)
     ) as WeekdayCode[];
 }
+
 function periodMeetsOn(dateStr: string, period: Period): boolean {
   const code = codeForDate(dateStr);
   if (code === "sat" || code === "sun") return false; // grid doesn’t show these anyway
