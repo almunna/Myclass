@@ -209,7 +209,7 @@ function Line({ label, value }: { label: string; value: string }) {
 }
 
 // ---------- Main ----------
-export default function ShareView() {
+export default function ShareClient() {
   const params = useSearchParams();
   const router = useRouter();
   const { currentUser } = useAuth();
@@ -855,7 +855,7 @@ export default function ShareView() {
 
       {/* Copy dialog */}
       <Dialog open={copyOpen} onOpenChange={setCopyOpen}>
-        <DialogContent className="sm:max-w-[520px]">
+        <DialogContent className="sm:max-w/[520px]">
           <DialogHeader>
             <DialogTitle>Copy plan to your calendar</DialogTitle>
           </DialogHeader>
