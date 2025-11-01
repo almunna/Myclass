@@ -36,6 +36,8 @@ import {
   where,
   doc,
   setDoc,
+  deleteField,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db, storage } from "@/firebase/firebase";
 import { ref as storageRef, getDownloadURL } from "firebase/storage";
@@ -59,23 +61,25 @@ type PlanField =
    Shared components
    =========================== */
 
-function AutoGrowTextarea({
-  value,
-  onChange,
-  placeholder,
-  className = "",
-  style,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  className?: string;
-  style?: React.CSSProperties;
-}) {
-  const ref = React.useRef<HTMLTextAreaElement | null>(null);
+/** ⬇️ forwardRef so we can focus on Tab navigation */
+const AutoGrowTextarea = React.forwardRef<
+  HTMLTextAreaElement,
+  {
+    value: string;
+    onChange: (v: string) => void;
+    placeholder?: string;
+    className?: string;
+    style?: React.CSSProperties;
+    onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  }
+>(function AutoGrowTextarea(
+  { value, onChange, placeholder, className = "", style, onKeyDown },
+  ref
+) {
+  const localRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   const autosize = React.useCallback(() => {
-    const el = ref.current;
+    const el = localRef.current;
     if (!el) return;
     el.style.height = "0px";
     el.style.height = el.scrollHeight + "px";
@@ -85,9 +89,12 @@ function AutoGrowTextarea({
     autosize();
   }, [value, autosize]);
 
+  // support external focus while keeping local autosize
+  React.useImperativeHandle(ref, () => localRef.current as HTMLTextAreaElement);
+
   return (
     <textarea
-      ref={ref}
+      ref={localRef}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
@@ -97,33 +104,55 @@ function AutoGrowTextarea({
         className
       )}
       onInput={autosize}
+      onKeyDown={onKeyDown}
       style={style}
     />
   );
-}
+});
 
-function EditableRow({
-  label,
-  value,
-  setValue,
-  color,
-  setColor,
-  actions, // ✅ NEW: inline actions beside the label
-}: {
-  label: string;
-  value: string;
-  setValue: (v: string) => void;
-  color?: string;
-  setColor: (c: string) => void;
-  actions?: React.ReactNode; // ✅ NEW
-}) {
+/** Imperative handle so parent can start editing the row */
+type EditableRowHandle = { startEditing: () => void };
+
+const EditableRow = React.forwardRef<
+  EditableRowHandle,
+  {
+    label: string;
+    value: string;
+    setValue: (v: string) => void;
+    color?: string;
+    setColor: (c: string) => void;
+    actions?: React.ReactNode;
+    /** Callbacks for Tab/Shift+Tab */
+    onTabNext?: () => void;
+    onTabPrev?: () => void;
+  }
+>(function EditableRow(
+  { label, value, setValue, color, setColor, actions, onTabNext, onTabPrev },
+  ref
+) {
   const [editing, setEditing] = React.useState(false);
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+
+  React.useImperativeHandle(ref, () => ({
+    startEditing: () => {
+      setEditing(true);
+      // focus after render
+      setTimeout(() => {
+        textareaRef.current?.focus();
+        // move caret to end
+        const el = textareaRef.current;
+        if (el) {
+          const len = el.value.length;
+          el.setSelectionRange(len, len);
+        }
+      }, 0);
+    },
+  }));
 
   return (
     <div className="leading-6 flex items-start gap-2">
       <span className="font-semibold shrink-0">{label}:</span>
 
-      {/* ✅ show actions like Search | Add new | Import beside the label */}
       {actions && (
         <div className="ml-2 flex items-center gap-3 shrink-0">{actions}</div>
       )}
@@ -150,30 +179,29 @@ function EditableRow({
         <div className="mt-1 w-full">
           <div className="flex items-center gap-2">
             <AutoGrowTextarea
+              ref={textareaRef}
               value={value}
               onChange={(v) => setValue(v)}
               placeholder={`Enter ${label.toLowerCase()}…`}
               style={{ color: color || undefined }}
+              onKeyDown={(e) => {
+                if (e.key === "Tab") {
+                  e.preventDefault();
+                  setEditing(false);
+                  if (e.shiftKey) {
+                    onTabPrev?.();
+                  } else {
+                    onTabNext?.();
+                  }
+                }
+              }}
             />
-            <div className="flex items-center gap-2">
-              <Label className="text-xs flex items-center gap-1">
-                <Palette className="h-3.5 w-3.5" />
-                Text color
-              </Label>
-              <Input
-                type="color"
-                value={color || "#000000"}
-                onChange={(e) => setColor(e.target.value)}
-                className="h-8 w-10 p-1"
-                onBlur={() => setEditing(false)}
-              />
-            </div>
           </div>
         </div>
       )}
     </div>
   );
-}
+});
 
 /* ===========================
    Types
@@ -376,7 +404,15 @@ export function LessonPlanModal({
   }, [period?.id, plan?.teacherId]);
 
   const clearAllFields = React.useCallback(async () => {
-    // 1) Delete all existing attachments from Storage via the provided handler
+    // 0) Resolve the plan doc ID (prefer existing id; fallback to deterministic key)
+    const planId =
+      plan?.id ??
+      `${plan.teacherId}__${plan.schoolYearId}__${plan.periodId || "NA"}__${
+        plan.date
+      }`;
+    const planRef = doc(db, "lessonPlans", planId);
+
+    // 1) Delete any files in Storage via provided handler
     try {
       const atts = [...(plan?.attachments ?? [])];
       if (atts.length) {
@@ -385,11 +421,37 @@ export function LessonPlanModal({
         );
       }
     } catch {
-      /* ignore individual delete errors; UI state will still be cleared below */
+      /* ignore individual delete errors */
     }
 
-    // 2) Clear all content fields, field colors, times and local attachments array
+    // 2) Clear fields directly in Firestore (remove fields, empty attachments)
+    await setDoc(
+      planRef,
+      {
+        name: deleteField(),
+        topic: deleteField(),
+        objective: deleteField(),
+        resources: deleteField(),
+        assignments: deleteField(),
+        homework: deleteField(),
+        notes: deleteField(),
+        standards: deleteField(),
+        startTime: deleteField(),
+        endTime: deleteField(),
+        fieldColors: deleteField(),
+        attachments: [], // keep an explicit empty array (easier for UI)
+        meta: {
+          // preserve createdAt if present; only bump updatedAt
+          updatedAt: serverTimestamp(),
+        },
+        // do NOT touch colorBg/colorText so your header theme stays intact
+      },
+      { merge: true }
+    );
+
+    // 3) Reflect DB state locally so the modal shows the cleared values
     safeSet({
+      id: planId, // ensure local has id we used
       name: "",
       topic: "",
       objective: "",
@@ -402,12 +464,29 @@ export function LessonPlanModal({
       endTime: undefined,
       fieldColors: {},
       attachments: [],
+      meta: { ...(plan.meta || {}), updatedAt: new Date() },
     });
-  }, [plan?.attachments, onDeleteAttachment]);
+  }, [
+    db,
+    plan?.id,
+    plan?.attachments,
+    plan?.teacherId,
+    plan?.schoolYearId,
+    plan?.periodId,
+    plan?.date,
+    onDeleteAttachment,
+  ]);
+
+  /** ⬇️ Refs that define the tab order between rows */
+  const topicRef = React.useRef<EditableRowHandle>(null);
+  const objectiveRef = React.useRef<EditableRowHandle>(null);
+  const resourcesRef = React.useRef<EditableRowHandle>(null);
+  const assignmentsRef = React.useRef<EditableRowHandle>(null);
+  const homeworkRef = React.useRef<EditableRowHandle>(null);
+  const notesRef = React.useRef<EditableRowHandle>(null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      {/* CHANGED: make DialogContent a flex column and remove its scrolling */}
       <DialogContent className="max-w-3xl max-h-[85vh] p-0 rounded border border-border bg-background text-foreground flex flex-col">
         <DialogHeader className="sr-only">
           <DialogTitle>
@@ -420,7 +499,6 @@ export function LessonPlanModal({
           </DialogTitle>
         </DialogHeader>
 
-        {/* NEW: scrollable content wrapper so footer stays fixed */}
         <div className="flex-1 min-h-0 overflow-y-auto">
           <div
             className="px-4 py-2"
@@ -451,46 +529,63 @@ export function LessonPlanModal({
           <div className="p-3 m-3 border rounded-sm bg-card text-card-foreground border-border">
             <div className="text-[15px] space-y-1">
               <EditableRow
+                ref={topicRef}
                 label="Topic"
                 value={plan.topic ?? ""}
                 setValue={(v) => safeSet({ topic: v })}
                 color={plan.fieldColors?.topic}
                 setColor={(c) => setFieldColor("topic", c)}
+                onTabNext={() => objectiveRef.current?.startEditing()}
               />
               <EditableRow
+                ref={objectiveRef}
                 label="Objective"
                 value={plan.objective ?? ""}
                 setValue={(v) => safeSet({ objective: v })}
                 color={plan.fieldColors?.objective}
                 setColor={(c) => setFieldColor("objective", c)}
+                onTabPrev={() => topicRef.current?.startEditing()}
+                onTabNext={() => resourcesRef.current?.startEditing()}
               />
               <EditableRow
+                ref={resourcesRef}
                 label="Resources"
                 value={plan.resources ?? ""}
                 setValue={(v) => safeSet({ resources: v })}
                 color={plan.fieldColors?.resources}
                 setColor={(c) => setFieldColor("resources", c)}
+                onTabPrev={() => objectiveRef.current?.startEditing()}
+                onTabNext={() => assignmentsRef.current?.startEditing()}
               />
               <EditableRow
+                ref={assignmentsRef}
                 label="Assignments"
                 value={plan.assignments ?? ""}
                 setValue={(v) => safeSet({ assignments: v })}
                 color={plan.fieldColors?.assignments}
                 setColor={(c) => setFieldColor("assignments", c)}
+                onTabPrev={() => resourcesRef.current?.startEditing()}
+                onTabNext={() => homeworkRef.current?.startEditing()}
               />
               <EditableRow
+                ref={homeworkRef}
                 label="Homework"
                 value={plan.homework ?? ""}
                 setValue={(v) => safeSet({ homework: v })}
                 color={plan.fieldColors?.homework}
                 setColor={(c) => setFieldColor("homework", c)}
+                onTabPrev={() => assignmentsRef.current?.startEditing()}
+                onTabNext={() => notesRef.current?.startEditing()}
               />
               <EditableRow
+                ref={notesRef}
                 label="Notes"
                 value={plan.notes ?? ""}
                 setValue={(v) => safeSet({ notes: v })}
                 color={plan.fieldColors?.notes}
                 setColor={(c) => setFieldColor("notes", c)}
+                onTabPrev={() => homeworkRef.current?.startEditing()}
+                // Next after Notes goes to Standards selector naturally
               />
 
               {/* 🔽 Standards text field removed; only the selector remains */}
@@ -513,12 +608,10 @@ export function LessonPlanModal({
                 type="file"
                 multiple
                 onChange={async (e) => {
-                  // <-- this passes ALL selected files in one event to your handler
                   await onUploadAttachment(e);
                   if (fileInputRef.current) fileInputRef.current.value = "";
                 }}
               />
-
               {!!plan.attachments?.length && (
                 <div className="mt-2">
                   <Label className="mb-1 block text-xs text-muted-foreground">
@@ -581,16 +674,20 @@ export function LessonPlanModal({
             </div>
           </div>
         </div>
-
-        {/* Footer stays visible (not part of the scroll area) */}
         <DialogFooter className="px-4 pb-4 flex items-center justify-between gap-3">
           <div className="text-sm text-muted-foreground">
             {format(parseISO(plan.date), "EEEE, MMM d, yyyy")}
           </div>
           <div className="flex gap-2">
-            <Button variant="ghost" onClick={clearAllFields}>
+            <Button
+              variant="ghost"
+              onClick={async () => {
+                await clearAllFields();
+              }}
+            >
               Clear All
             </Button>
+
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>

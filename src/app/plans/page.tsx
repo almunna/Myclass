@@ -68,7 +68,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
-
+import { SharePlansModal } from "@/components/plans/SharePlansModal";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -612,6 +612,7 @@ function PlansBody() {
   const [cursor, setCursor] = useState<Date>(startOfDay(new Date()));
   const [view, setView] = useState<"month" | "week" | "day">("week");
 
+  const [shareOpen, setShareOpen] = useState(false);
   // Delete confirmation
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmPlan, setConfirmPlan] = useState<LessonPlan | null>(null);
@@ -1919,12 +1920,11 @@ function PlansBody() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button variant="outline" asChild>
-          <Link href="/sharing">
-            <Share2 className="h-4 w-4 mr-2" />
-            Sharing
-          </Link>
+        <Button variant="outline" onClick={() => setShareOpen(true)}>
+          <Share2 className="h-4 w-4 mr-2" />
+          Share
         </Button>
+
         <Button variant="outline" onClick={() => setCopyDialogOpen(true)}>
           Copy Year (Period)
         </Button>
@@ -2598,7 +2598,12 @@ function PlansBody() {
           onDeleteAttachment={deleteAttachment}
           saving={editorLoading}
         />
-
+        <SharePlansModal
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          ownerId={currentUser?.uid}
+          schoolYearId={selectedYearId}
+        />
         {/* Delete confirmation modal (single instance at root) */}
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <DialogContent className="sm:max-w-[380px]">
@@ -2929,7 +2934,40 @@ function ResourcesLine({ value }: { value: string }) {
   return <Line label="Resources" value={value} />;
 }
 
+// Remove a leading grade like "6th ", "10th " (case-insensitive)
+const gradePrefixRE = /^\s*(?:1st|2nd|3rd|[4-9]th|1[0-2]th)\b\.?\s*/i;
+function stripGradePrefix(s: string) {
+  return s.replace(gradePrefixRE, "");
+}
+
 function Line({ label, value }: { label: string; value: string }) {
+  // Special case: show each standard on its own line
+  if (label.toLowerCase() === "standards") {
+    const items = (value || "")
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map(stripGradePrefix); // ⬅️ strip leading grade
+
+    return (
+      <div className="text-xs leading-snug">
+        <span className="font-medium">{label}:</span>{" "}
+        {items.length ? (
+          <div className="mt-0.5 whitespace-pre-wrap break-words">
+            {items.map((s, i) => (
+              <div key={i}>{s}</div>
+            ))}
+          </div>
+        ) : (
+          <span className="whitespace-pre-wrap break-words align-top">
+            {value}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  // Default rendering for other fields (unchanged)
   return (
     <div className="text-xs leading-snug">
       <span className="font-medium">{label}:</span>{" "}

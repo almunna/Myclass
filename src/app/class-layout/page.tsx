@@ -1078,7 +1078,7 @@ export default function ClassLayoutPage() {
                                     setSelectedStudent(name);
                                   }}
                                   onDragEnd={() => setSelectedStudent(null)}
-                                  className="text-emerald-950 text-sm font-semibold cursor-grab"
+                                  className="text-emerald-950 text-[11px] cursor-grab"
                                 >
                                   {seatText}
                                 </div>

@@ -630,9 +630,7 @@ function ReadOnlyBody() {
                     {plan.objective && (
                       <Line label="Objective" value={plan.objective} />
                     )}
-                    {plan.resources && (
-                      <Line label="Resources" value={plan.resources} />
-                    )}
+                    {plan.resources && <ResourcesLine value={plan.resources} />}
                     {plan.assignments && (
                       <Line label="Assignments" value={plan.assignments} />
                     )}
@@ -803,7 +801,7 @@ function ReadOnlyBody() {
                               <Line label="Objective" value={plan.objective} />
                             )}
                             {plan.resources && (
-                              <Line label="Resources" value={plan.resources} />
+                              <ResourcesLine value={plan.resources} />
                             )}
                             {plan.assignments && (
                               <Line
@@ -859,4 +857,29 @@ function Line({ label, value }: { label: string; value: string }) {
       <span className="whitespace-pre-wrap break-words align-top">{value}</span>
     </div>
   );
+}
+
+/** Linkify when the entire value is a single URL; otherwise fall back to Line */
+function ResourcesLine({ value }: { value: string }) {
+  const trimmed = (value || "").trim();
+  const singleUrlRe = /^(https?:\/\/[^\s)]+)$/i;
+
+  if (singleUrlRe.test(trimmed)) {
+    return (
+      <div className="text-xs leading-snug">
+        <span className="font-medium">Resources:</span>{" "}
+        <a
+          href={trimmed}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline text-primary hover:text-primary/80 break-all"
+          title={trimmed}
+        >
+          {trimmed}
+        </a>
+      </div>
+    );
+  }
+
+  return <Line label="Resources" value={value} />;
 }

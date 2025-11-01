@@ -19,7 +19,8 @@ import { cn } from "@/lib/utils";
 /** What we store for each saved standard */
 type SavedStandard = {
   id: string;
-  teacherId: string;
+  teacherId: string; // "global" for global entries
+  isPublic?: boolean; // true for globally visible
   grade: string; // e.g. "6th"
   subject: string; // e.g. "ELA"
   code: string; // e.g. "ELA.1.3.a"
@@ -83,11 +84,10 @@ export default function StandardsControls({
   const [term, setTerm] = React.useState("");
 
   React.useEffect(() => {
-    if (!teacherId) return;
     (async () => {
       const q = query(
         collection(db, "standards"),
-        where("teacherId", "==", teacherId)
+        where("isPublic", "==", true)
       );
       const snap = await getDocs(q);
       const rows: SavedStandard[] = [];
@@ -96,7 +96,7 @@ export default function StandardsControls({
       );
       setAllMine(rows);
     })();
-  }, [teacherId]);
+  }, []); // global: no teacherId dependency
 
   const matches = React.useMemo(() => {
     if (!allMine) return [];
@@ -121,12 +121,13 @@ export default function StandardsControls({
   const [savingAdd, setSavingAdd] = React.useState(false);
 
   async function handleSaveNew() {
-    if (!teacherId || !code.trim() || !desc.trim()) return;
+    if (!code.trim() || !desc.trim()) return;
     setSavingAdd(true);
     try {
       const ref = doc(collection(db, "standards"));
       const payload: Omit<SavedStandard, "id"> = {
-        teacherId,
+        teacherId: "global",
+        isPublic: true,
         grade,
         subject: subject.trim(),
         code: code.trim(),
@@ -217,7 +218,8 @@ export default function StandardsControls({
         if (!g || !c || !d) continue;
         const ref = doc(collection(db, "standards"));
         const payload: Omit<SavedStandard, "id"> = {
-          teacherId,
+          teacherId: "global",
+          isPublic: true,
           grade: g.trim(),
           subject: (s || "").trim(),
           code: c.trim(),
@@ -337,7 +339,7 @@ export default function StandardsControls({
                           </span>{" "}
                         </>
                       )}
-                      <span className="font-medium">{m.code}</span>
+                      <span className="font-medium">{noDots(m.code)}</span>
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {m.description}
@@ -524,13 +526,14 @@ export default function StandardsControls({
 
 /* ---------- utils ---------- */
 
+// ⬇️ replace your current renderStd with this version
 function renderStd(
   s: Pick<SavedStandard, "grade" | "subject" | "code" | "description">
 ) {
-  // how it shows in the plan.standards string
-  // Include subject when present, e.g. "6th ELA ELA.1.3.a Identify..."
+  // We intentionally do NOT include the grade in the rendered string.
   const subj = s.subject?.trim() ? ` ${s.subject.trim()}` : "";
-  return `${s.grade}${subj} ${s.code} ${s.description}`;
+  const codePretty = noDots(s.code); // keep dots intact
+  return `${subj} ${codePretty} ${s.description}`.trim();
 }
 
 function splitStandards(v: string) {
@@ -592,4 +595,9 @@ function linkCls(active: boolean) {
       ? "bg-muted/70 border-border font-semibold"
       : "border-transparent text-blue-600"
   );
+}
+
+/** Remove periods for display (e.g., "ELA.1.3.a" -> "ELA 1 3 a") */
+function noDots(code: string) {
+  return String(code || "");
 }

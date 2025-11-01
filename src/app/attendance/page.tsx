@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import {
   collection,
   query,
@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Save, ArrowUpDown, Check, FileBarChart } from "lucide-react";
+import { Save, ArrowUpDown, Check, FileBarChart, Printer } from "lucide-react";
 import { format } from "date-fns";
 import { CustomDatePicker } from "@/components/ui/date-picker";
 import {
@@ -53,6 +53,11 @@ import { useAuth } from "@/hooks/useAuth";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import { useSubscriptionAccess } from "@/hooks/useSubscriptionAccess";
 import { NoAccess } from "@/components/NoAccess";
+import {
+  useAttendancePrint,
+  PrintStyles,
+  PrintArea,
+} from "@/components/attendence/print";
 
 interface Student {
   id: string;
@@ -131,6 +136,18 @@ export default function AttendancePage() {
     periodStats: [],
   });
 
+  // 🔹 Archived students are fetched and used ONLY in Reports (not in Take Attendance)
+  const [archivedStudents, setArchivedStudents] = useState<Student[]>([]);
+
+  // 🔹 Roster filter for Reports: active / archived / both
+  const [reportRoster, setReportRoster] = useState<"active" | "archived">(
+    "active"
+  );
+
+  // ⬇️ Printing setup (only for the Reports section)
+  const { containerRef, handlePrint } = useAttendancePrint();
+  const fmt = (d: Date) => format(d, "MMM d, yyyy");
+
   // 🔹 When period changes, clean old records
   useEffect(() => {
     setExistingSessionId(null);
@@ -148,11 +165,25 @@ export default function AttendancePage() {
     () => new Intl.Collator(undefined, { sensitivity: "base", numeric: true }),
     []
   );
+
+  // Reports dropdown: show Active/Archived/Both depending on roster selection
   const reportStudents = useMemo(() => {
+    const source =
+      reportRoster === "active"
+        ? students
+        : reportRoster === "archived"
+        ? archivedStudents
+        : [
+            ...students,
+            ...archivedStudents.filter(
+              (a) => !students.some((s) => s.id === a.id)
+            ),
+          ];
+
     const base =
       reportPeriodId === "all"
-        ? students
-        : students.filter((s) =>
+        ? source
+        : source.filter((s) =>
             (s.periods || []).some((p) => p.id === reportPeriodId)
           );
 
@@ -160,12 +191,13 @@ export default function AttendancePage() {
     return [...base].sort((a, b) =>
       nameCollator.compare(a.name || "", b.name || "")
     );
-  }, [students, reportPeriodId, nameCollator]);
+  }, [students, archivedStudents, reportPeriodId, reportRoster, nameCollator]);
 
   useEffect(() => {
     if (currentUser) {
       fetchPeriods();
       fetchStudents();
+      fetchArchivedStudents(); // ← archived fetched separately; not mixed into `students`
     }
   }, [currentUser]);
 
@@ -259,6 +291,30 @@ export default function AttendancePage() {
     }
   };
 
+  // 🔹 Fetch archived separately; not mixed into active roster anywhere
+  const fetchArchivedStudents = async () => {
+    try {
+      const q = query(
+        collection(db, "archivedStudents"),
+        where("teacherId", "==", currentUser?.uid)
+      );
+      const snapshot = await getDocs(q);
+      const list = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          name: data.name,
+          studentId: data.studentId,
+          periods: data.periods || [],
+        } as Student;
+      });
+      setArchivedStudents(list);
+    } catch (error) {
+      console.error("Error fetching archived students:", error);
+      toast.error("Failed to load archived students");
+    }
+  };
+
   const initializeAttendanceRecords = (list: Student[]) => {
     const records = list.map((student) => ({
       studentId: student.id,
@@ -276,7 +332,7 @@ export default function AttendancePage() {
     try {
       const dateStr = format(selectedDate, "yyyy-MM-dd");
 
-      // Build current roster directly from `students`
+      // Build current roster directly from ACTIVE `students` only (archived are excluded from taking attendance)
       const roster = students.filter((s) =>
         (s.periods || []).some((p) => p.id === selectedPeriodId)
       );
@@ -569,18 +625,25 @@ export default function AttendancePage() {
           const studentOk =
             reportStudentId === "all" || record.studentId === reportStudentId;
 
-          // find the student (current roster data)
-          const studentObj = students.find((s) => s.id === record.studentId);
+          // find the student according to roster selection (active | archived)
+          const studentObj =
+            reportRoster === "active"
+              ? students.find((s) => s.id === record.studentId)
+              : archivedStudents.find((s) => s.id === record.studentId);
 
-          // ✅ KEY FIX:
+          // If the record’s student isn’t found in the selected roster, skip it.
+          if (!studentObj) return;
+
           // If Period = All, verify the student is enrolled in *this record’s* period.
           // If a specific period is selected, verify against that specific period.
           const targetPeriodId =
             reportPeriodId === "all" ? recPeriodId : reportPeriodId;
 
-          const enrolledInTarget =
-            !!studentObj &&
-            (studentObj.periods || []).some((p) => p.id === targetPeriodId);
+          // If we have the profile (active or archived), use its enrollment;
+          // if not (very old data), allow it.
+          const enrolledInTarget = studentObj
+            ? (studentObj.periods || []).some((p) => p.id === targetPeriodId)
+            : true;
 
           if (!(periodOk && studentOk && enrolledInTarget)) return;
 
@@ -655,7 +718,7 @@ export default function AttendancePage() {
           onValueChange={setActiveTab}
           className="space-y-6"
         >
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-2 print:hidden">
             <TabsTrigger
               value="take-attendance"
               className="flex items-center gap-2"
@@ -670,7 +733,10 @@ export default function AttendancePage() {
           </TabsList>
 
           {/* Take Attendance Tab */}
-          <TabsContent value="take-attendance" className="space-y-6">
+          <TabsContent
+            value="take-attendance"
+            className="space-y-6 print:hidden"
+          >
             {/* Selection Controls */}
             <Card>
               <CardHeader>
@@ -1003,12 +1069,12 @@ export default function AttendancePage() {
 
           {/* Reports Tab */}
           <TabsContent value="reports" className="space-y-6">
-            <Card>
+            <Card className="print:hidden">
               <CardHeader>
                 <CardTitle>Attendance Reports</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
                   {/* Date Range */}
                   <div className="space-y-2">
                     <Label>Start Date</Label>
@@ -1069,315 +1135,392 @@ export default function AttendancePage() {
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {/* Roster Filter */}
+                  <div className="space-y-2">
+                    <Label>Roster</Label>
+                    <Select
+                      value={reportRoster}
+                      onValueChange={(v) =>
+                        setReportRoster(v as "active" | "archived")
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Both" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">Active only</SelectItem>
+                        <SelectItem value="archived">Archived only</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
 
-                <Button
-                  onClick={generateReport}
-                  disabled={loading}
-                  className="flex items-center gap-2"
-                >
-                  {loading ? (
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                  ) : (
-                    <FileBarChart className="h-4 w-4" />
-                  )}
-                  Generate Report
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={generateReport}
+                    disabled={loading}
+                    className="flex items-center gap-2"
+                  >
+                    {loading ? (
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    ) : (
+                      <FileBarChart className="h-4 w-4" />
+                    )}
+                    Generate Report
+                  </Button>
+
+                  {/* Print button */}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={handlePrint}
+                    className="flex items-center gap-2"
+                  >
+                    <Printer className="h-4 w-4" />
+                    Print
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
-            {/* Analytics Dashboard */}
-            {reportData.length > 0 && (
-              <>
-                {/* Summary Statistics */}
-                <Card>
+            {/* ✅ Printable content only (graphs + list) */}
+            <PrintArea ref={containerRef} className="space-y-6">
+              {/* Print-only heading */}
+              {reportData.length > 0 && (
+                <div className="hidden print:block">
+                  <h2 className="text-xl font-bold">Attendance Report</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Range: {fmt(reportStartDate)} – {fmt(reportEndDate)}
+                    {reportPeriodId !== "all" && (
+                      <>
+                        {" "}
+                        • Period:{" "}
+                        {periods.find((p) => p.id === reportPeriodId)?.name ||
+                          "Selected"}
+                      </>
+                    )}
+                    {reportStudentId !== "all" && (
+                      <>
+                        {" "}
+                        • Student:{" "}
+                        {
+                          (
+                            reportStudents.find(
+                              (s) => s.id === reportStudentId
+                            ) || { name: "Selected" }
+                          ).name
+                        }
+                      </>
+                    )}
+                  </p>
+                  <div className="h-2" />
+                </div>
+              )}
+
+              {/* Analytics Dashboard */}
+              {reportData.length > 0 && (
+                <>
+                  {/* Summary Statistics */}
+                  <Card className="avoid-break">
+                    <CardHeader>
+                      <CardTitle>Attendance Summary</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                        <div className="text-center">
+                          <div className="text-3xl font-bold text-green-600">
+                            {analyticsData.summary.present}
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            Present
+                          </div>
+                          <div className="text-xs text-green-600">
+                            {reportData.length > 0 &&
+                              Math.round(
+                                ((analyticsData.summary.present +
+                                  analyticsData.summary.tardy) /
+                                  reportData.length) *
+                                  100
+                              )}
+                            %
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-3xl font-bold text-yellow-600">
+                            {analyticsData.summary.tardy}
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            Tardy
+                          </div>
+                          <div className="text-xs text-yellow-600">
+                            {reportData.length > 0 &&
+                              Math.round(
+                                (analyticsData.summary.tardy /
+                                  reportData.length) *
+                                  100
+                              )}
+                            %
+                          </div>
+                        </div>
+                        <div className="text-center">
+                          <div className="text-3xl font-bold text-red-600">
+                            {analyticsData.summary.absent}
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            Absent
+                          </div>
+                          <div className="text-xs text-red-600">
+                            {reportData.length > 0 &&
+                              Math.round(
+                                (analyticsData.summary.absent /
+                                  reportData.length) *
+                                  100
+                              )}
+                            %
+                          </div>
+                        </div>
+
+                        <div className="flex justify-center">
+                          <ResponsiveContainer width={120} height={120}>
+                            <PieChart>
+                              <Pie
+                                data={[
+                                  {
+                                    name: "Present",
+                                    value: analyticsData.summary.present,
+                                    color: "#16a34a",
+                                  },
+                                  {
+                                    name: "Tardy",
+                                    value: analyticsData.summary.tardy,
+                                    color: "#ca8a04",
+                                  },
+                                  {
+                                    name: "Absent",
+                                    value: analyticsData.summary.absent,
+                                    color: "#dc2626",
+                                  },
+                                ]}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={25}
+                                outerRadius={50}
+                                dataKey="value"
+                              >
+                                {[
+                                  {
+                                    name: "Present",
+                                    value: analyticsData.summary.present,
+                                    color: "#16a34a",
+                                  },
+                                  {
+                                    name: "Tardy",
+                                    value: analyticsData.summary.tardy,
+                                    color: "#ca8a04",
+                                  },
+                                  {
+                                    name: "Absent",
+                                    value: analyticsData.summary.absent,
+                                    color: "#dc2626",
+                                  },
+                                ].map((entry, index) => (
+                                  <Cell
+                                    key={`cell-${index}`}
+                                    fill={entry.color}
+                                  />
+                                ))}
+                              </Pie>
+                              <Tooltip />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Daily Trends Chart */}
+                  {analyticsData.dailyTrends.length > 1 && (
+                    <Card className="avoid-break">
+                      <CardHeader>
+                        <CardTitle>Daily Attendance Trends</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <AreaChart data={analyticsData.dailyTrends}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="date" />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Area
+                              type="monotone"
+                              dataKey="present"
+                              stackId="1"
+                              stroke="#16a34a"
+                              fill="#16a34a"
+                              name="Present"
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="tardy"
+                              stackId="1"
+                              stroke="#ca8a04"
+                              fill="#ca8a04"
+                              name="Tardy"
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="absent"
+                              stackId="1"
+                              stroke="#dc2626"
+                              fill="#dc2626"
+                              name="Absent"
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Student Performance Chart */}
+                  {analyticsData.studentStats.length > 0 && (
+                    <Card className="avoid-break">
+                      <CardHeader>
+                        <CardTitle>Student Attendance Rates</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ResponsiveContainer width="100%" height={400}>
+                          <BarChart data={analyticsData.studentStats}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis
+                              dataKey="studentName"
+                              angle={-45}
+                              textAnchor="end"
+                              height={100}
+                              interval={0}
+                            />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Bar
+                              dataKey="attendanceRate"
+                              fill="#3b82f6"
+                              name="Attendance Rate %"
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Period Performance Chart */}
+                  {analyticsData.periodStats.length > 1 && (
+                    <Card className="avoid-break">
+                      <CardHeader>
+                        <CardTitle>Period Attendance Comparison</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ResponsiveContainer width="100%" height={300}>
+                          <BarChart data={analyticsData.periodStats}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="periodName" />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Bar
+                              dataKey="present"
+                              fill="#16a34a"
+                              name="Present"
+                            />
+                            <Bar dataKey="tardy" fill="#ca8a04" name="Tardy" />
+                            <Bar
+                              dataKey="absent"
+                              fill="#dc2626"
+                              name="Absent"
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </CardContent>
+                    </Card>
+                  )}
+                </>
+              )}
+
+              {/* Report Results */}
+              {reportData.length > 0 && (
+                <Card className="avoid-break">
                   <CardHeader>
-                    <CardTitle>Attendance Summary</CardTitle>
+                    <div className="flex justify-between items-center">
+                      <CardTitle>
+                        Detailed Attendance Records ({reportData.length}{" "}
+                        records)
+                      </CardTitle>
+                    </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                      <div className="text-center">
-                        <div className="text-3xl font-bold text-green-600">
-                          {analyticsData.summary.present}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          Present
-                        </div>
-                        <div className="text-xs text-green-600">
-                          {reportData.length > 0 &&
-                            Math.round(
-                              (analyticsData.summary.present /
-                                reportData.length) *
-                                100
-                            )}
-                          %
-                        </div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-3xl font-bold text-yellow-600">
-                          {analyticsData.summary.tardy}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          Tardy
-                        </div>
-                        <div className="text-xs text-yellow-600">
-                          {reportData.length > 0 &&
-                            Math.round(
-                              (analyticsData.summary.tardy /
-                                reportData.length) *
-                                100
-                            )}
-                          %
-                        </div>
-                      </div>
-                      <div className="text-center">
-                        <div className="text-3xl font-bold text-red-600">
-                          {analyticsData.summary.absent}
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          Absent
-                        </div>
-                        <div className="text-xs text-red-600">
-                          {reportData.length > 0 &&
-                            Math.round(
-                              (analyticsData.summary.absent /
-                                reportData.length) *
-                                100
-                            )}
-                          %
-                        </div>
-                      </div>
-
-                      <div className="flex justify-center">
-                        <ResponsiveContainer width={120} height={120}>
-                          <PieChart>
-                            <Pie
-                              data={[
-                                {
-                                  name: "Present",
-                                  value: analyticsData.summary.present,
-                                  color: "#16a34a",
-                                },
-                                {
-                                  name: "Tardy",
-                                  value: analyticsData.summary.tardy,
-                                  color: "#ca8a04",
-                                },
-                                {
-                                  name: "Absent",
-                                  value: analyticsData.summary.absent,
-                                  color: "#dc2626",
-                                },
-                              ]}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={25}
-                              outerRadius={50}
-                              dataKey="value"
-                            >
-                              {[
-                                {
-                                  name: "Present",
-                                  value: analyticsData.summary.present,
-                                  color: "#16a34a",
-                                },
-                                {
-                                  name: "Tardy",
-                                  value: analyticsData.summary.tardy,
-                                  color: "#ca8a04",
-                                },
-                                {
-                                  name: "Absent",
-                                  value: analyticsData.summary.absent,
-                                  color: "#dc2626",
-                                },
-                              ].map((entry, index) => (
-                                <Cell
-                                  key={`cell-${index}`}
-                                  fill={entry.color}
-                                />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </div>
+                    <div className="border rounded-lg overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Date</TableHead>
+                            <TableHead>Period</TableHead>
+                            <TableHead>Student Name</TableHead>
+                            <TableHead>Student ID</TableHead>
+                            <TableHead>Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {reportData.map((record, index) => (
+                            <TableRow key={index}>
+                              <TableCell>
+                                {format(new Date(record.date), "MMM d, yyyy")}
+                              </TableCell>
+                              <TableCell>{record.periodName}</TableCell>
+                              <TableCell className="font-medium">
+                                {record.studentName}
+                              </TableCell>
+                              <TableCell>{record.studentId}</TableCell>
+                              <TableCell>
+                                <span
+                                  className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                    record.status === "present"
+                                      ? "bg-green-100 text-green-800"
+                                      : record.status === "tardy"
+                                      ? "bg-yellow-100 text-yellow-800"
+                                      : "bg-red-100 text-red-800"
+                                  }`}
+                                >
+                                  {record.status.charAt(0).toUpperCase() +
+                                    record.status.slice(1)}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
                     </div>
                   </CardContent>
                 </Card>
+              )}
 
-                {/* Daily Trends Chart */}
-                {analyticsData.dailyTrends.length > 1 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Daily Attendance Trends</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <ResponsiveContainer width="100%" height={300}>
-                        <AreaChart data={analyticsData.dailyTrends}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="date" />
-                          <YAxis />
-                          <Tooltip />
-                          <Legend />
-                          <Area
-                            type="monotone"
-                            dataKey="present"
-                            stackId="1"
-                            stroke="#16a34a"
-                            fill="#16a34a"
-                            name="Present"
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="tardy"
-                            stackId="1"
-                            stroke="#ca8a04"
-                            fill="#ca8a04"
-                            name="Tardy"
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="absent"
-                            stackId="1"
-                            stroke="#dc2626"
-                            fill="#dc2626"
-                            name="Absent"
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Student Performance Chart */}
-                {analyticsData.studentStats.length > 0 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Student Attendance Rates</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <ResponsiveContainer width="100%" height={400}>
-                        <BarChart data={analyticsData.studentStats}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis
-                            dataKey="studentName"
-                            angle={-45}
-                            textAnchor="end"
-                            height={100}
-                            interval={0}
-                          />
-                          <YAxis />
-                          <Tooltip />
-                          <Legend />
-                          <Bar
-                            dataKey="attendanceRate"
-                            fill="#3b82f6"
-                            name="Attendance Rate %"
-                          />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {/* Period Performance Chart */}
-                {analyticsData.periodStats.length > 1 && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Period Attendance Comparison</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <ResponsiveContainer width="100%" height={300}>
-                        <BarChart data={analyticsData.periodStats}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="periodName" />
-                          <YAxis />
-                          <Tooltip />
-                          <Legend />
-                          <Bar
-                            dataKey="present"
-                            fill="#16a34a"
-                            name="Present"
-                          />
-                          <Bar dataKey="tardy" fill="#ca8a04" name="Tardy" />
-                          <Bar dataKey="absent" fill="#dc2626" name="Absent" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </CardContent>
-                  </Card>
-                )}
-              </>
-            )}
-
-            {/* Report Results */}
-            {reportData.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <div className="flex justify-between items-center">
-                    <CardTitle>
-                      Detailed Attendance Records ({reportData.length} records)
-                    </CardTitle>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="border rounded-lg overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Date</TableHead>
-                          <TableHead>Period</TableHead>
-                          <TableHead>Student Name</TableHead>
-                          <TableHead>Student ID</TableHead>
-                          <TableHead>Status</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {reportData.map((record, index) => (
-                          <TableRow key={index}>
-                            <TableCell>
-                              {format(new Date(record.date), "MMM d, yyyy")}
-                            </TableCell>
-                            <TableCell>{record.periodName}</TableCell>
-                            <TableCell className="font-medium">
-                              {record.studentName}
-                            </TableCell>
-                            <TableCell>{record.studentId}</TableCell>
-                            <TableCell>
-                              <span
-                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                  record.status === "present"
-                                    ? "bg-green-100 text-green-800"
-                                    : record.status === "tardy"
-                                    ? "bg-yellow-100 text-yellow-800"
-                                    : "bg-red-100 text-red-800"
-                                }`}
-                              >
-                                {record.status.charAt(0).toUpperCase() +
-                                  record.status.slice(1)}
-                              </span>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {reportData.length === 0 && reportStartDate && reportEndDate && (
-              <Card>
-                <CardContent className="text-center py-8">
-                  <p className="text-muted-foreground">
-                    No attendance records found for the selected criteria.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
+              {/* Empty-state: show on screen only, not on paper */}
+              {reportData.length === 0 && reportStartDate && reportEndDate && (
+                <Card className="print:hidden">
+                  <CardContent className="text-center py-8">
+                    <p className="text-muted-foreground">
+                      No attendance records found for the selected criteria.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+            </PrintArea>
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Global print CSS once */}
+      <PrintStyles />
     </ProtectedRoute>
   );
 }

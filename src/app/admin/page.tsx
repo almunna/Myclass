@@ -60,6 +60,9 @@ import { getUserSubscription } from "@/lib/db/users";
 // ✅ NEW: modal component import
 import TutorialVideosModal from "@/components/admin/TutorialVideosModal";
 
+// ✅ NEW: Standards directory import
+import StandardsDirectory from "@/components/admin/StandardsDirectory";
+
 interface AdminStats {
   totalUsers: number;
   activeSubscriptions: number;
@@ -387,7 +390,8 @@ export default function AdminPage() {
 
         {/* Admin Tabs */}
         <Tabs defaultValue="users" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-2">
+          {/* ✅ updated to 3 columns and added Standards tab */}
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="users" className="flex items-center gap-2">
               <Users className="h-4 w-4" />
               Users
@@ -395,6 +399,10 @@ export default function AdminPage() {
             <TabsTrigger value="database" className="flex items-center gap-2">
               <Database className="h-4 w-4" />
               Database
+            </TabsTrigger>
+            <TabsTrigger value="standards" className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4" />
+              Standards
             </TabsTrigger>
           </TabsList>
 
@@ -546,6 +554,11 @@ export default function AdminPage() {
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* ✅ Standards Tab */}
+          <TabsContent value="standards">
+            <StandardsDirectory />
           </TabsContent>
         </Tabs>
 

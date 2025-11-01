@@ -114,8 +114,17 @@ export default function ReportsPage() {
   const { currentUser } = useAuth();
   const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
   const [isClient, setIsClient] = useState(false);
+
   const [periods, setPeriods] = useState<Period[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
+
+  /** NEW: hold active & archived separately; we only display one at a time */
+  const [activeStudents, setActiveStudents] = useState<Student[]>([]);
+  const [archivedStudents, setArchivedStudents] = useState<Student[]>([]);
+  const [studentSource, setStudentSource] = useState<"active" | "archived">(
+    "active"
+  );
+
   const [schoolYears, setSchoolYears] = useState<any[]>([]);
   const [roomExits, setRoomExits] = useState<RoomExit[]>([]);
   const [filteredExits, setFilteredExits] = useState<RoomExit[]>([]);
@@ -196,10 +205,21 @@ export default function ReportsPage() {
 
   useEffect(() => {
     const fetchData = async () => {
-      await Promise.all([fetchPeriods(), fetchStudents(), fetchRoomExits()]);
+      await Promise.all([
+        fetchPeriods(),
+        fetchActiveStudents(),
+        fetchArchivedStudents(),
+        fetchRoomExits(),
+      ]);
     };
     if (isClient) fetchData();
   }, [isClient]);
+
+  /** When roster source changes, swap the working `students` array and clear the student filter */
+  useEffect(() => {
+    setStudents(studentSource === "active" ? activeStudents : archivedStudents);
+    setSelectedStudentId("all");
+  }, [studentSource, activeStudents, archivedStudents]);
 
   const fetchPeriods = async () => {
     if (!currentUser?.uid) return;
@@ -248,7 +268,7 @@ export default function ReportsPage() {
     }
   };
 
-  const fetchStudents = async () => {
+  const fetchActiveStudents = async () => {
     if (!currentUser?.uid) return;
     try {
       const studentsQuery = query(
@@ -273,9 +293,49 @@ export default function ReportsPage() {
         return student;
       });
 
-      setStudents(studentsList.sort((a, b) => a.name.localeCompare(b.name)));
+      setActiveStudents(
+        studentsList.sort((a, b) => a.name.localeCompare(b.name))
+      );
+      // Initialize working list to active on first load
+      if (studentSource === "active") {
+        setStudents(studentsList.sort((a, b) => a.name.localeCompare(b.name)));
+      }
     } catch (error) {
       console.error("Error fetching students:", error);
+    }
+  };
+
+  /** NEW: fetch archived students for the alternate roster source */
+  const fetchArchivedStudents = async () => {
+    if (!currentUser?.uid) return;
+    try {
+      const qRef = query(
+        collection(db, "archivedStudents"),
+        where("teacherId", "==", currentUser.uid)
+      );
+      const snap = await getDocs(qRef);
+      const list = snap.docs.map((doc) => {
+        const data: any = doc.data();
+        const s: Student = {
+          id: doc.id,
+          name: data.name,
+          studentId: data.studentId,
+        };
+        if (Array.isArray(data.periods)) {
+          s.periods = data.periods;
+        } else if (data.periodId) {
+          s.periodId = data.periodId;
+          s.periodName = data.periodName;
+        }
+        return s;
+      });
+      const sorted = list.sort((a, b) => a.name.localeCompare(b.name));
+      setArchivedStudents(sorted);
+      if (studentSource === "archived") {
+        setStudents(sorted);
+      }
+    } catch (error) {
+      console.error("Error fetching archived students:", error);
     }
   };
 
@@ -335,6 +395,7 @@ export default function ReportsPage() {
       return false;
     });
   }, [students, selectedPeriodId]);
+
   useEffect(() => {
     const fetchBehaviorCounts = async () => {
       if (students.length === 0) {
@@ -487,10 +548,18 @@ export default function ReportsPage() {
     }
 
     // Student filter
+    // Student filter
     if (selectedStudentId !== "all") {
       filtered = filtered.filter(
         (exit) => exit.studentId === selectedStudentId
       );
+    } else {
+      // 🔒 Roster source filter: when "All Students" is selected,
+      // limit exits to the CURRENT roster (active or archived)
+      const rosterIds = new Set(
+        students.flatMap((s) => [s.id, s.studentId]) // include both doc id and custom code
+      );
+      filtered = filtered.filter((exit) => rosterIds.has(exit.studentId));
     }
 
     // ---- Add synthetic rows for behavior-only students (so they show in Detailed) ----
@@ -599,7 +668,8 @@ export default function ReportsPage() {
     // --- Add behavior-only students (no exits) ---
     Object.keys(behaviorCounts).forEach((sid) => {
       if (!studentMap.has(sid)) {
-        const st = students.find((s) => s.id === sid || s.studentId === sid);
+        const st =
+          students.find((s) => s.id === sid || s.studentId === sid) || null;
         studentMap.set(sid, {
           studentId: sid,
           studentName: st?.name || "Unknown",
@@ -963,7 +1033,7 @@ export default function ReportsPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
                   {/* School Year Filter */}
                   <div>
                     <Label htmlFor="school-year-filter" className="mb-2 block">
@@ -1130,6 +1200,29 @@ export default function ReportsPage() {
                             {student.name}
                           </SelectItem>
                         ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* NEW: Roster Source (Active vs Archived) */}
+                  <div>
+                    <Label htmlFor="roster-source" className="mb-2 block">
+                      Roster
+                    </Label>
+                    <Select
+                      value={studentSource}
+                      onValueChange={(v) =>
+                        setStudentSource(v as "active" | "archived")
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Active Students" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="active">Active Students</SelectItem>
+                        <SelectItem value="archived">
+                          Archived Students
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>

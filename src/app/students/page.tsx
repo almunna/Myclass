@@ -14,7 +14,15 @@ import {
 } from "firebase/firestore";
 import { db } from "@/firebase/firebase";
 import { Button } from "@/components/ui/button";
-import { PlusCircle, Pencil, Trash2, Search } from "lucide-react";
+import {
+  PlusCircle,
+  Pencil,
+  Trash2,
+  Search,
+  ArchiveRestore,
+  Archive,
+  RotateCcw,
+} from "lucide-react";
 import { useSubscriptionAccess } from "@/hooks/useSubscriptionAccess";
 import { NoAccess } from "@/components/NoAccess";
 import { toast } from "sonner";
@@ -66,6 +74,9 @@ interface Student {
     id: string;
     name: string;
   }[];
+  hasPlanAccess?: boolean;
+  teacherId?: string;
+  updatedAt?: any;
 }
 
 interface Period {
@@ -75,12 +86,17 @@ interface Period {
 }
 
 type SortBy = "first" | "last";
+type Folder = "active" | "archived";
 
 export default function StudentsPage() {
   const { currentUser } = useAuth();
   const { hasAccess, loading: subscriptionLoading } = useSubscriptionAccess();
   const [students, setStudents] = useState<Student[]>([]);
   const [filteredStudents, setFilteredStudents] = useState<Student[]>([]);
+  const [archivedStudents, setArchivedStudents] = useState<Student[]>([]);
+  const [filteredArchivedStudents, setFilteredArchivedStudents] = useState<
+    Student[]
+  >([]);
   const [periods, setPeriods] = useState<Period[]>([]);
   const [schoolYears, setSchoolYears] = useState<any[]>([]);
   const [selectedSchoolYearId, setSelectedSchoolYearId] =
@@ -94,6 +110,9 @@ export default function StudentsPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
+  // NEW: folder (Active / Archived)
+  const [folder, setFolder] = useState<Folder>("active");
+
   // Form state
   const [isOpen, setIsOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -102,7 +121,7 @@ export default function StudentsPage() {
   const [studentId, setStudentId] = useState("");
   const [selectedPeriods, setSelectedPeriods] = useState<string[]>([]);
 
-  // Delete confirmation
+  // Delete/Archive confirmation
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
 
@@ -112,10 +131,18 @@ export default function StudentsPage() {
 
   // Fetch students and periods on mount
   useEffect(() => {
-    fetchStudents();
-    fetchPeriods();
+    fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const fetchAll = async () => {
+    setLoading(true);
+    try {
+      await Promise.all([fetchStudents(), fetchArchived(), fetchPeriods()]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Helpers for sorting
   const firstToken = (n: string) =>
@@ -142,62 +169,105 @@ export default function StudentsPage() {
 
   // Filter students based on search and filters (+ apply sorting)
   useEffect(() => {
-    let filtered = [...students];
+    // Active
+    {
+      let filtered = [...students];
 
-    // Search filter
-    if (searchQuery.trim()) {
-      const queryText = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        (student) =>
-          student.name.toLowerCase().includes(queryText) ||
-          student.studentId.toLowerCase().includes(queryText)
-      );
-    }
-
-    // School year filter
-    if (selectedSchoolYearId !== "all") {
-      const selectedSchoolYear = schoolYears.find(
-        (sy) => sy.id === selectedSchoolYearId
-      );
-      if (selectedSchoolYear) {
-        filtered = filtered.filter((student) => {
-          return student.periods.some((studentPeriod) => {
-            const period = periods.find((p) => p.id === studentPeriod.id);
-            return period && period.schoolYearName === selectedSchoolYear.name;
-          });
-        });
+      if (searchQuery.trim()) {
+        const queryText = searchQuery.toLowerCase();
+        filtered = filtered.filter(
+          (student) =>
+            student.name.toLowerCase().includes(queryText) ||
+            student.studentId.toLowerCase().includes(queryText)
+        );
       }
+
+      if (selectedSchoolYearId !== "all") {
+        const selectedSchoolYear = schoolYears.find(
+          (sy) => sy.id === selectedSchoolYearId
+        );
+        if (selectedSchoolYear) {
+          filtered = filtered.filter((student) => {
+            return student.periods.some((studentPeriod) => {
+              const period = periods.find((p) => p.id === studentPeriod.id);
+              return (
+                period && period.schoolYearName === selectedSchoolYear.name
+              );
+            });
+          });
+        }
+      }
+
+      if (selectedPeriodId !== "all") {
+        filtered = filtered.filter((student) =>
+          student.periods.some((p) => p.id === selectedPeriodId)
+        );
+      }
+
+      filtered.sort(sortComparator);
+      setFilteredStudents(filtered);
     }
 
-    // Period filter
-    if (selectedPeriodId !== "all") {
-      filtered = filtered.filter((student) =>
-        student.periods.some((p) => p.id === selectedPeriodId)
-      );
+    // Archived (same filters)
+    {
+      let filteredA = [...archivedStudents];
+
+      if (searchQuery.trim()) {
+        const queryText = searchQuery.toLowerCase();
+        filteredA = filteredA.filter(
+          (student) =>
+            student.name.toLowerCase().includes(queryText) ||
+            student.studentId.toLowerCase().includes(queryText)
+        );
+      }
+
+      if (selectedSchoolYearId !== "all") {
+        const selectedSchoolYear = schoolYears.find(
+          (sy) => sy.id === selectedSchoolYearId
+        );
+        if (selectedSchoolYear) {
+          filteredA = filteredA.filter((student) => {
+            return student.periods.some((studentPeriod) => {
+              const period = periods.find((p) => p.id === studentPeriod.id);
+              return (
+                period && period.schoolYearName === selectedSchoolYear.name
+              );
+            });
+          });
+        }
+      }
+
+      if (selectedPeriodId !== "all") {
+        filteredA = filteredA.filter((student) =>
+          student.periods.some((p) => p.id === selectedPeriodId)
+        );
+      }
+
+      filteredA.sort(sortComparator);
+      setFilteredArchivedStudents(filteredA);
     }
 
-    // Apply sorting
-    filtered.sort(sortComparator);
-
-    setFilteredStudents(filtered);
-
-    // If selection exists, remove any IDs that are no longer visible in the filtered list
-    setSelectedIds((prev) =>
-      prev.filter((id) => filtered.some((s) => s.id === id))
-    );
+    // prune selection by current folder’s filtered list
+    setSelectedIds((prev) => {
+      const visible = (
+        folder === "active" ? filteredStudents : filteredArchivedStudents
+      ).map((s) => s.id);
+      return prev.filter((id) => visible.includes(id));
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     students,
+    archivedStudents,
     searchQuery,
     selectedSchoolYearId,
     selectedPeriodId,
     schoolYears,
     periods,
     sortBy,
+    folder,
   ]);
 
   const fetchStudents = async () => {
-    setLoading(true);
     try {
       const studentsQuery = query(
         collection(db, "students"),
@@ -208,14 +278,13 @@ export default function StudentsPage() {
       const studentsList: Student[] = [];
 
       for (const docSnapshot of querySnapshot.docs) {
-        const studentData = docSnapshot.data();
+        const studentData = docSnapshot.data() as any;
 
         // Handle both old (single period) and new (multiple periods) formats
         let studentPeriods = [];
         if (Array.isArray(studentData.periods)) {
           studentPeriods = studentData.periods;
         } else if (studentData.periodId) {
-          // Convert old format to new format
           studentPeriods = [
             {
               id: studentData.periodId,
@@ -229,17 +298,56 @@ export default function StudentsPage() {
           name: studentData.name,
           studentId: studentData.studentId,
           periods: studentPeriods,
+          hasPlanAccess: studentData.hasPlanAccess,
+          teacherId: studentData.teacherId,
+          updatedAt: studentData.updatedAt,
         });
       }
 
-      // Keep original list; sorting is handled in the filter effect
       setStudents(studentsList);
-      setFilteredStudents(studentsList.slice().sort(sortComparator));
+      // filtered handled by effect
     } catch (error) {
       console.error("Error fetching students:", error);
       toast.error("Failed to load students");
-    } finally {
-      setLoading(false);
+    }
+  };
+
+  const fetchArchived = async () => {
+    try {
+      const archivedQuery = query(
+        collection(db, "archivedStudents"),
+        where("teacherId", "==", currentUser?.uid)
+      );
+      const snap = await getDocs(archivedQuery);
+
+      const list: Student[] = snap.docs.map((d) => {
+        const data = d.data() as any;
+        let studentPeriods = [];
+        if (Array.isArray(data.periods)) {
+          studentPeriods = data.periods;
+        } else if (data.periodId) {
+          studentPeriods = [
+            {
+              id: data.periodId,
+              name: data.periodName || "Unknown Period",
+            },
+          ];
+        }
+        return {
+          id: d.id,
+          name: data.name,
+          studentId: data.studentId,
+          periods: studentPeriods,
+          hasPlanAccess: data.hasPlanAccess,
+          teacherId: data.teacherId,
+          updatedAt: data.updatedAt,
+        };
+      });
+
+      setArchivedStudents(list);
+    } catch (e) {
+      console.error("Error fetching archived students:", e);
+      toast.error("Failed to load archived students");
     }
   };
 
@@ -263,7 +371,7 @@ export default function StudentsPage() {
       const querySnapshot = await getDocs(periodsQuery);
 
       const periodsList = querySnapshot.docs.map((doc) => {
-        const data = doc.data();
+        const data = doc.data() as any;
         const schoolYear = schoolYearsList.find(
           (sy) => sy.id === data.schoolYearId
         );
@@ -271,7 +379,7 @@ export default function StudentsPage() {
           id: doc.id,
           name: data.name,
           schoolYearName: schoolYear?.name || "Unknown School Year",
-        };
+        } as Period;
       });
 
       // Sort by school year first, then by period name
@@ -305,9 +413,10 @@ export default function StudentsPage() {
 
   const openEditDialog = async (studentId: string) => {
     try {
-      const studentDoc = await getDoc(doc(db, "students", studentId));
+      const baseColl = folder === "archived" ? "archivedStudents" : "students";
+      const studentDoc = await getDoc(doc(db, baseColl, studentId));
       if (studentDoc.exists()) {
-        const data = studentDoc.data();
+        const data = studentDoc.data() as any;
         setIsEditMode(true);
         setCurrentStudentId(studentId);
         setName(data.name);
@@ -355,10 +464,10 @@ export default function StudentsPage() {
       {
         username: sid,
         password: sid,
-        studentRef: studentRefId, // "students/{id}"
+        studentRef: studentRefId,
         teacherId: currentUser?.uid,
         name: displayName,
-        periodIds, // ✅ store allowed periods here
+        periodIds,
         updatedAt: new Date(),
         enabled: true,
       },
@@ -376,20 +485,21 @@ export default function StudentsPage() {
   };
   // =============================================
 
-  // ======== BULK PLAN ACCESS ========
-  const loadStudentsByIds = async (ids: string[]) => {
-    const snaps = await Promise.all(
-      ids.map((id) => getDoc(doc(db, "students", id)))
-    );
+  // ======== BULK PLAN ACCESS (Active only) ========
+  const loadStudentsByIds = async (
+    ids: string[],
+    base: "students" | "archivedStudents"
+  ) => {
+    const snaps = await Promise.all(ids.map((id) => getDoc(doc(db, base, id))));
     return snaps
       .filter((s) => s.exists())
       .map((s) => ({ id: s.id, ...(s.data() as any) }));
   };
 
   const handleBulkGrantAccess = async () => {
-    if (selectedIds.length === 0) return;
+    if (folder !== "active" || selectedIds.length === 0) return;
     try {
-      const studentsToUpdate = await loadStudentsByIds(selectedIds);
+      const studentsToUpdate = await loadStudentsByIds(selectedIds, "students");
 
       const batch = writeBatch(db);
       let granted = 0;
@@ -462,9 +572,9 @@ export default function StudentsPage() {
   };
 
   const handleBulkRevokeAccess = async () => {
-    if (selectedIds.length === 0) return;
+    if (folder !== "active" || selectedIds.length === 0) return;
     try {
-      const studentsToUpdate = await loadStudentsByIds(selectedIds);
+      const studentsToUpdate = await loadStudentsByIds(selectedIds, "students");
 
       const batch = writeBatch(db);
       let revoked = 0;
@@ -501,6 +611,7 @@ export default function StudentsPage() {
   };
   // ==================================
 
+  // ======== SAVE (Active or Archived edit) ========
   const handleSaveStudent = async () => {
     if (!name || !studentId) {
       toast.error("Name and Student ID are required");
@@ -508,28 +619,32 @@ export default function StudentsPage() {
     }
 
     try {
-      // NEW: Ensure studentId is unique among students for this teacher
-      const dupQuery = query(
-        collection(db, "students"),
-        where("teacherId", "==", currentUser?.uid),
-        where("studentId", "==", studentId)
-      );
-      const dupSnap = await getDocs(dupQuery);
-      const duplicate = dupSnap.docs.find((d) => d.id !== currentStudentId);
-      if (duplicate) {
-        toast.error("Student ID already exists. Choose a different one.");
-        return;
+      const baseColl = folder === "archived" ? "archivedStudents" : "students";
+
+      // Ensure studentId is unique among students for this teacher (active collection only)
+      if (baseColl === "students") {
+        const dupQuery = query(
+          collection(db, "students"),
+          where("teacherId", "==", currentUser?.uid),
+          where("studentId", "==", studentId)
+        );
+        const dupSnap = await getDocs(dupQuery);
+        const duplicate = dupSnap.docs.find((d) => d.id !== currentStudentId);
+        if (duplicate) {
+          toast.error("Student ID already exists. Choose a different one.");
+          return;
+        }
       }
 
-      // If enabling plan access, ensure unique login ID in creds
-      if (hasPlanAccess) {
+      // If enabling plan access (only meaningful for active), ensure unique login ID
+      if (hasPlanAccess && baseColl === "students") {
         await assertLoginUniqueOrThrow(studentId);
       }
 
       const studentRef =
         isEditMode && currentStudentId
-          ? doc(db, "students", currentStudentId)
-          : doc(collection(db, "students"));
+          ? doc(db, baseColl, currentStudentId)
+          : doc(collection(db, baseColl));
 
       // Convert selected period IDs to period objects with name
       const periodsWithNames = selectedPeriods.map((periodId) => {
@@ -547,37 +662,127 @@ export default function StudentsPage() {
           studentId,
           periods: periodsWithNames,
           teacherId: currentUser?.uid,
-          hasPlanAccess,
+          hasPlanAccess: baseColl === "students" ? hasPlanAccess : false,
           updatedAt: new Date(),
         },
         { merge: true }
       );
 
-      // Manage credentials
-      if (hasPlanAccess) {
-        // If ID changed during edit, remove old login doc
-        if (isEditMode && prevStudentId && prevStudentId !== studentId) {
-          await deleteStudentCreds(prevStudentId);
+      // Manage credentials only for ACTIVE collection
+      if (baseColl === "students") {
+        if (hasPlanAccess) {
+          if (isEditMode && prevStudentId && prevStudentId !== studentId) {
+            await deleteStudentCreds(prevStudentId);
+          }
+          await upsertStudentCreds(
+            studentRef.id,
+            studentId,
+            name,
+            selectedPeriods
+          );
+        } else {
+          await deleteStudentCreds(
+            isEditMode ? prevStudentId || studentId : studentId
+          );
         }
-        await upsertStudentCreds(
-          studentRef.id,
-          studentId,
-          name,
-          selectedPeriods
-        );
-      } else {
-        // Access disabled => delete creds (old or current id)
-        await deleteStudentCreds(
-          isEditMode ? prevStudentId || studentId : studentId
-        );
       }
 
       setIsOpen(false);
-      await fetchStudents();
+      await (baseColl === "students" ? fetchStudents() : fetchArchived());
       toast.success(isEditMode ? "Student updated" : "Student added");
     } catch (error: any) {
       console.error("Error saving student:", error);
       toast.error(error?.message || "Failed to save student");
+    }
+  };
+
+  // ======== ARCHIVE / RESTORE / PERMANENT DELETE ========
+  const moveToArchive = async (id: string) => {
+    try {
+      const snap = await getDoc(doc(db, "students", id));
+      if (!snap.exists()) throw new Error("Student not found");
+      const data = snap.data() as any;
+
+      // write into archivedStudents with same id
+      await setDoc(doc(db, "archivedStudents", id), {
+        ...data,
+        hasPlanAccess: false,
+        archivedAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      // delete original
+      await deleteDoc(doc(db, "students", id));
+
+      // remove creds
+      if (data.studentId) {
+        await deleteStudentCreds(data.studentId);
+      }
+
+      await Promise.all([fetchStudents(), fetchArchived()]);
+      toast.success("Student archived");
+    } catch (e: any) {
+      console.error("Archive error:", e);
+      toast.error(e?.message || "Failed to archive student");
+    }
+  };
+
+  const restoreFromArchive = async (id: string) => {
+    try {
+      const snap = await getDoc(doc(db, "archivedStudents", id));
+      if (!snap.exists()) throw new Error("Archived student not found");
+      const data = snap.data() as any;
+
+      // ensure no duplicate studentId in active
+      if (data.studentId) {
+        const dupQuery = query(
+          collection(db, "students"),
+          where("teacherId", "==", currentUser?.uid),
+          where("studentId", "==", data.studentId)
+        );
+        const dupSnap = await getDocs(dupQuery);
+        if (!dupSnap.empty) {
+          toast.error(
+            `Cannot restore. Student ID "${data.studentId}" already exists.`
+          );
+          return;
+        }
+      }
+
+      await setDoc(
+        doc(db, "students", id),
+        {
+          ...data,
+          hasPlanAccess: false, // restored without creds by default
+          archivedAt: null,
+          updatedAt: new Date(),
+        },
+        { merge: true }
+      );
+
+      await deleteDoc(doc(db, "archivedStudents", id));
+      await Promise.all([fetchStudents(), fetchArchived()]);
+      toast.success("Student restored");
+    } catch (e: any) {
+      console.error("Restore error:", e);
+      toast.error(e?.message || "Failed to restore student");
+    }
+  };
+
+  const permanentlyDeleteArchived = async (id: string) => {
+    try {
+      // fetch to get studentId for creds defense (should be none, but safe)
+      const snap = await getDoc(doc(db, "archivedStudents", id));
+      const sId = snap.exists() ? (snap.data().studentId as string) : null;
+
+      await deleteDoc(doc(db, "archivedStudents", id));
+      if (sId) await deleteStudentCreds(sId);
+
+      await fetchArchived();
+      toast.success("Student permanently deleted");
+    } catch (e) {
+      console.error("Permanent delete error:", e);
+      toast.error("Failed to delete student");
     }
   };
 
@@ -586,61 +791,69 @@ export default function StudentsPage() {
     setDeleteDialogOpen(true);
   };
 
+  // In Active: confirm means Archive; In Archived: confirm means Permanent Delete
   const handleDeleteStudent = async () => {
     if (!studentToDelete) return;
 
     try {
-      // fetch to get studentId for creds deletion
-      const snap = await getDoc(doc(db, "students", studentToDelete));
-      const sId = snap.exists() ? (snap.data().studentId as string) : null;
-
-      const batch = writeBatch(db);
-      batch.delete(doc(db, "students", studentToDelete));
-      await batch.commit();
-
-      // delete creds outside batch (different collection/doc id)
-      if (sId) await deleteStudentCreds(sId);
-
-      await fetchStudents();
-      toast.success("Student deleted");
-    } catch (error) {
-      console.error("Error deleting student:", error);
-      toast.error("Failed to delete student");
+      if (folder === "active") {
+        await moveToArchive(studentToDelete);
+      } else {
+        await permanentlyDeleteArchived(studentToDelete);
+      }
     } finally {
       setStudentToDelete(null);
       setDeleteDialogOpen(false);
     }
   };
 
-  // NEW: Bulk delete
+  // NEW: Bulk Archive (when Active) / Bulk Permanent Delete (when Archived)
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
     try {
-      // Load student docs to know their studentIds
-      const snaps = await Promise.all(
-        selectedIds.map((id) => getDoc(doc(db, "students", id)))
-      );
-
-      const batch = writeBatch(db);
-      const toDeleteCreds: string[] = [];
-      snaps.forEach((snap) => {
-        if (snap.exists()) {
-          batch.delete(doc(db, "students", snap.id));
-          const sid = snap.data().studentId as string | undefined;
-          if (sid) toDeleteCreds.push(sid);
+      if (folder === "active") {
+        // bulk archive
+        const snaps = await Promise.all(
+          selectedIds.map((id) => getDoc(doc(db, "students", id)))
+        );
+        for (const snap of snaps) {
+          if (snap.exists()) {
+            const id = snap.id;
+            const data = snap.data() as any;
+            await setDoc(doc(db, "archivedStudents", id), {
+              ...data,
+              hasPlanAccess: false,
+              archivedAt: new Date(),
+              updatedAt: new Date(),
+            });
+            await deleteDoc(doc(db, "students", id));
+            if (data.studentId) await deleteStudentCreds(data.studentId);
+          }
         }
-      });
-      await batch.commit();
-
-      // remove creds (not in batch)
-      await Promise.all(toDeleteCreds.map(deleteStudentCreds));
-
-      setSelectedIds([]);
-      await fetchStudents();
-      toast.success("Selected students deleted");
+        setSelectedIds([]);
+        await Promise.all([fetchStudents(), fetchArchived()]);
+        toast.success("Selected students archived");
+      } else {
+        // bulk permanent delete from archived
+        const snaps = await Promise.all(
+          selectedIds.map((id) => getDoc(doc(db, "archivedStudents", id)))
+        );
+        const toDeleteCreds: string[] = [];
+        for (const snap of snaps) {
+          if (snap.exists()) {
+            const sId = (snap.data() as any).studentId as string | undefined;
+            if (sId) toDeleteCreds.push(sId);
+            await deleteDoc(doc(db, "archivedStudents", snap.id));
+          }
+        }
+        await Promise.all(toDeleteCreds.map(deleteStudentCreds));
+        setSelectedIds([]);
+        await fetchArchived();
+        toast.success("Selected archived students permanently deleted");
+      }
     } catch (error) {
-      console.error("Bulk delete error:", error);
-      toast.error("Failed to delete selected students");
+      console.error("Bulk action error:", error);
+      toast.error("Failed to process selected students");
     } finally {
       setBulkDeleteOpen(false);
     }
@@ -668,6 +881,29 @@ export default function StudentsPage() {
     setSearchQuery(value);
   };
 
+  // Selection helpers for the table depend on folder
+  const visibleList =
+    folder === "active" ? filteredStudents : filteredArchivedStudents;
+
+  const allVisibleSelected =
+    visibleList.length > 0 &&
+    visibleList.every((s) => selectedIds.includes(s.id));
+  const toggleSelectAllVisible = () => {
+    if (allVisibleSelected) {
+      setSelectedIds((prev) =>
+        prev.filter((id) => !visibleList.some((s) => s.id === id))
+      );
+    } else {
+      const toAdd = visibleList.map((s) => s.id);
+      setSelectedIds((prev) => Array.from(new Set([...prev, ...toAdd])));
+    }
+  };
+  const toggleRow = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
   // Show loading while checking subscription
   if (subscriptionLoading) {
     return (
@@ -691,77 +927,122 @@ export default function StudentsPage() {
     );
   }
 
-  // Selection helpers for the table
-  const allVisibleSelected =
-    filteredStudents.length > 0 &&
-    filteredStudents.every((s) => selectedIds.includes(s.id));
-  const toggleSelectAllVisible = () => {
-    if (allVisibleSelected) {
-      setSelectedIds((prev) =>
-        prev.filter((id) => !filteredStudents.some((s) => s.id === id))
-      );
-    } else {
-      const toAdd = filteredStudents.map((s) => s.id);
-      setSelectedIds((prev) => Array.from(new Set([...prev, ...toAdd])));
-    }
-  };
-  const toggleRow = (id: string) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
   return (
     <ProtectedRoute>
       <div className="container mx-auto px-4 py-8 mt-3">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">Students</h1>
           <div className="flex items-center gap-3">
-            <ImportStudents
-              periods={periods}
-              onImportComplete={fetchStudents}
-            />
-            {/* NEW: Bulk delete action appears when selection exists */}
+            {/* Folder switch */}
+            <Select
+              value={folder}
+              onValueChange={(v: Folder) => {
+                setFolder(v);
+                setSelectedIds([]);
+              }}
+            >
+              <SelectTrigger className="w-[160px]">
+                <SelectValue placeholder="Folder" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="archived">Archived</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {/* Import only for Active */}
+            {folder === "active" && (
+              <ImportStudents
+                periods={periods}
+                onImportComplete={fetchStudents}
+              />
+            )}
+
+            {/* Bulk actions */}
             {selectedIds.length > 0 && (
               <Button
                 variant="destructive"
                 onClick={() => setBulkDeleteOpen(true)}
                 className="flex items-center gap-2"
               >
-                <Trash2 className="h-4 w-4" />
-                Delete Selected ({selectedIds.length})
+                {folder === "active" ? (
+                  <>
+                    <Archive className="h-4 w-4" />
+                    Archive Selected ({selectedIds.length})
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    Delete Permanently ({selectedIds.length})
+                  </>
+                )}
               </Button>
             )}
-            <Button onClick={openAddDialog} className="flex items-center gap-2">
-              <PlusCircle className="h-4 w-4" />
-              Add Student
-            </Button>
-            <Button
-              variant="outline"
-              onClick={handleBulkGrantAccess}
-              className="flex items-center gap-2"
-            >
-              Grant Plan Access
-            </Button>
 
-            <Button
-              variant="outline"
-              onClick={handleBulkRevokeAccess}
-              className="flex items-center gap-2"
-            >
-              Revoke Plan Access
-            </Button>
+            {folder === "active" && (
+              <>
+                <Button
+                  onClick={openAddDialog}
+                  className="flex items-center gap-2"
+                >
+                  <PlusCircle className="h-4 w-4" />
+                  Add Student
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleBulkGrantAccess}
+                  className="flex items-center gap-2"
+                >
+                  Grant Plan Access
+                </Button>
+
+                <Button
+                  variant="outline"
+                  onClick={handleBulkRevokeAccess}
+                  className="flex items-center gap-2"
+                >
+                  Revoke Plan Access
+                </Button>
+              </>
+            )}
+
+            {folder === "archived" && selectedIds.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    const snaps = await Promise.all(
+                      selectedIds.map((id) =>
+                        getDoc(doc(db, "archivedStudents", id))
+                      )
+                    );
+                    for (const s of snaps) {
+                      if (s.exists()) await restoreFromArchive(s.id);
+                    }
+                    setSelectedIds([]);
+                  } catch (e) {
+                    toast.error("Failed to restore selected");
+                  }
+                }}
+                className="flex items-center gap-2"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Restore Selected
+              </Button>
+            )}
           </div>
         </div>
 
-        {/* Search and Filter Section */}
+        {/* Search and Filter Section (works for both folders) */}
         <div className="mb-6 bg-white border rounded-lg p-4">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {/* Search */}
             <div className="relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search students..."
+                placeholder={`Search ${
+                  folder === "active" ? "students" : "archived"
+                }...`}
                 value={searchQuery}
                 onChange={(e) => handleSearchChange(e.target.value)}
                 className="pl-9"
@@ -860,7 +1141,7 @@ export default function StudentsPage() {
               </Select>
             </div>
 
-            {/* NEW: Sort By */}
+            {/* Sort By */}
             <div>
               <Select
                 value={sortBy}
@@ -880,7 +1161,13 @@ export default function StudentsPage() {
           {/* Filter Summary */}
           <div className="mt-4 flex items-center justify-between">
             <div className="text-sm text-muted-foreground">
-              Showing {filteredStudents.length} of {students.length} students
+              Showing{" "}
+              {folder === "active"
+                ? filteredStudents.length
+                : filteredArchivedStudents.length}{" "}
+              of{" "}
+              {folder === "active" ? students.length : archivedStudents.length}{" "}
+              {folder === "active" ? "students" : "archived"}
               {searchQuery && (
                 <span className="ml-2 text-blue-600">
                   • Filtered by: "{searchQuery}"
@@ -904,6 +1191,7 @@ export default function StudentsPage() {
               <span className="ml-2 text-blue-600">
                 • Sorted by: {sortBy === "first" ? "First Name" : "Last Name"}
               </span>
+              <span className="ml-2 text-purple-600">• Folder: {folder}</span>
             </div>
             {(searchQuery ||
               selectedSchoolYearId !== "all" ||
@@ -928,14 +1216,18 @@ export default function StudentsPage() {
             <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto"></div>
             <p className="mt-2 text-muted-foreground">Loading students...</p>
           </div>
-        ) : filteredStudents.length === 0 ? (
+        ) : visibleList.length === 0 ? (
           <div className="text-center py-8 border rounded-lg">
             <p className="text-muted-foreground">
-              {students.length === 0
-                ? "No students found"
-                : "No students match your search criteria"}
+              {folder === "active"
+                ? students.length === 0
+                  ? "No students found"
+                  : "No students match your search criteria"
+                : archivedStudents.length === 0
+                ? "No archived students"
+                : "No archived students match your search criteria"}
             </p>
-            {students.length === 0 && (
+            {folder === "active" && students.length === 0 && (
               <Button
                 onClick={openAddDialog}
                 variant="outline"
@@ -950,7 +1242,7 @@ export default function StudentsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  {/* NEW: header checkbox for select-all visible */}
+                  {/* header checkbox for select-all visible */}
                   <TableHead className="w-[48px]">
                     <div className="flex items-center justify-center">
                       <Checkbox
@@ -967,7 +1259,7 @@ export default function StudentsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredStudents.map((student) => {
+                {visibleList.map((student) => {
                   const checked = selectedIds.includes(student.id);
                   return (
                     <TableRow key={student.id}>
@@ -999,14 +1291,39 @@ export default function StudentsPage() {
                           >
                             <Pencil className="h-4 w-4" />
                           </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-8 p-0 text-red-500 border-red-200 hover:text-red-500 hover:bg-red-50 hover:border-red-300"
-                            onClick={() => openDeleteDialog(student.id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+
+                          {folder === "active" ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 w-8 p-0 text-amber-600 border-amber-200 hover:text-amber-700 hover:bg-amber-50 hover:border-amber-300"
+                              onClick={() => moveToArchive(student.id)}
+                              title="Archive"
+                            >
+                              <Archive className="h-4 w-4" />
+                            </Button>
+                          ) : (
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-green-600 border-green-200 hover:text-green-700 hover:bg-green-50 hover:border-green-300"
+                                onClick={() => restoreFromArchive(student.id)}
+                                title="Restore"
+                              >
+                                <ArchiveRestore className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 w-8 p-0 text-red-500 border-red-200 hover:text-red-500 hover:bg-red-50 hover:border-red-300"
+                                onClick={() => openDeleteDialog(student.id)}
+                                title="Delete Permanently"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -1021,7 +1338,13 @@ export default function StudentsPage() {
           <DialogContent className="sm:max-w-[425px]">
             <DialogHeader>
               <DialogTitle>
-                {isEditMode ? "Edit Student" : "Add Student"}
+                {isEditMode
+                  ? folder === "archived"
+                    ? "Edit Archived Student"
+                    : "Edit Student"
+                  : folder === "archived"
+                  ? "Add Archived Student"
+                  : "Add Student"}
               </DialogTitle>
               <DialogDescription>
                 {isEditMode
@@ -1053,29 +1376,31 @@ export default function StudentsPage() {
                 />
               </div>
 
-              {/* NEW: Has Plan Access */}
-              <div className="grid grid-cols-4 items-start gap-4">
-                <Label className="text-right pt-2">Plan Access</Label>
-                <div className="col-span-3 flex items-start space-x-2">
-                  <Checkbox
-                    id="hasPlanAccess"
-                    checked={hasPlanAccess}
-                    onCheckedChange={(v) => setHasPlanAccess(!!v)}
-                  />
-                  <div>
-                    <Label htmlFor="hasPlanAccess" className="font-medium">
-                      Has Plan Access
-                    </Label>
-                    <p className="text-xs text-muted-foreground">
-                      When enabled, a student login is created.
-                      <br />
-                      <span className="font-medium">Username</span> = Student
-                      ID, <span className="font-medium">Password</span> =
-                      Student ID. Ensure it’s unique.
-                    </p>
+              {/* Has Plan Access only relevant for Active */}
+              {folder === "active" && (
+                <div className="grid grid-cols-4 items-start gap-4">
+                  <Label className="text-right pt-2">Plan Access</Label>
+                  <div className="col-span-3 flex items-start space-x-2">
+                    <Checkbox
+                      id="hasPlanAccess"
+                      checked={hasPlanAccess}
+                      onCheckedChange={(v) => setHasPlanAccess(!!v)}
+                    />
+                    <div>
+                      <Label htmlFor="hasPlanAccess" className="font-medium">
+                        Has Plan Access
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        When enabled, a student login is created.
+                        <br />
+                        <span className="font-medium">Username</span> = Student
+                        ID, <span className="font-medium">Password</span> =
+                        Student ID. Ensure it’s unique.
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
 
               <div className="grid grid-cols-4 items-start gap-4">
                 <Label className="text-right pt-2">Periods</Label>
@@ -1138,46 +1463,64 @@ export default function StudentsPage() {
           </DialogContent>
         </Dialog>
 
-        {/* Delete Confirmation Dialog */}
+        {/* Archive / Permanent Delete Confirmation */}
         <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {folder === "active"
+                  ? "Archive student?"
+                  : "Delete permanently?"}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                This action cannot be undone. This will permanently delete the
-                student and all associated data.
+                {folder === "active"
+                  ? "This will move the student to the Archived folder. You can restore them later."
+                  : "This action cannot be undone. This will permanently delete the archived student and all associated data."}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <Button
                 onClick={handleDeleteStudent}
-                className="bg-red-500 hover:bg-red-600 text-white"
+                className={
+                  folder === "active"
+                    ? "bg-amber-500 hover:bg-amber-600 text-white"
+                    : "bg-red-500 hover:bg-red-600 text-white"
+                }
               >
-                Delete
+                {folder === "active" ? "Archive" : "Delete"}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
 
-        {/* NEW: Bulk Delete Confirmation */}
+        {/* Bulk Confirm (Archive vs Permanent Delete) */}
         <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Delete selected students?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {folder === "active"
+                  ? "Archive selected students?"
+                  : "Permanently delete selected archived students?"}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                This will permanently delete {selectedIds.length} selected
-                student(s) and their associated data.
+                {folder === "active"
+                  ? `This will move ${selectedIds.length} selected student(s) to Archived. You can restore them later.`
+                  : `This will permanently delete ${selectedIds.length} selected archived student(s). This cannot be undone.`}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <Button
                 onClick={handleBulkDelete}
-                className="bg-red-500 hover:bg-red-600 text-white"
+                className={
+                  folder === "active"
+                    ? "bg-amber-500 hover:bg-amber-600 text-white"
+                    : "bg-red-500 hover:bg-red-600 text-white"
+                }
                 autoFocus
               >
-                Delete Selected
+                {folder === "active" ? "Archive Selected" : "Delete Selected"}
               </Button>
             </AlertDialogFooter>
           </AlertDialogContent>

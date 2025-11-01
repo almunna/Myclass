@@ -226,7 +226,20 @@ export default function PeriodsPage() {
       id: doc.id,
       ...doc.data(),
     })) as Period[];
-    setPeriods(periodsList.sort((a, b) => a.name.localeCompare(b.name)));
+
+    const timeVal = (t?: string) => {
+      if (!t) return Number.POSITIVE_INFINITY; // push missing times to the end
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    };
+
+    periodsList.sort(
+      (a, b) =>
+        timeVal(a.startTime) - timeVal(b.startTime) ||
+        a.name.localeCompare(b.name)
+    );
+
+    setPeriods(periodsList);
   };
 
   const toggleYearExpansion = (yearId: string) => {
